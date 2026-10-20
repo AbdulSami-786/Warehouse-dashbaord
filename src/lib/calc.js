@@ -333,18 +333,21 @@ function paidExpenses(expenses = []) {
 /** Money in and out of each payment method (Cash, JazzCash, bank…). */
 export function methodBalances(methods = [], {
   payments = [], expenses = [], employeeTx = [], cheques = [], supplierPayments = [], whExpenses = [], purchases = [],
+  whPartyPayments = [],
 } = {}) {
   const uncleared = new Set(cheques.filter((c) => c.status !== 'cleared' && c.paymentId).map((c) => c.paymentId));
   const sum = (rows) => rows.reduce((s, x) => s + (Number(x.amount) || 0), 0);
   const bought = paidPurchases(purchases);
   const spent = paidExpenses(expenses);
   return methods.map((m) => {
-    const inflow = sum(payments.filter((p) => p.method === m && !p.reversed && !uncleared.has(p.id)));
+    const inflow = sum(payments.filter((p) => p.method === m && !p.reversed && !uncleared.has(p.id))) +
+      sum(whPartyPayments.filter((p) => p.direction === 'received' && (p.method || 'Cash') === m));
     const out =
       sum(spent.filter((e) => (e.method || 'Cash') === m)) +
       sum(employeeTx.filter((t) => (t.method || 'Cash') === m && t.type !== 'bonus_accrual')) +
       sum(supplierPayments.filter((p) => (p.method || 'Cash') === m)) +
       sum(whExpenses.filter((e) => (e.method || 'Cash') === m)) +
+      sum(whPartyPayments.filter((p) => p.direction === 'paid' && (p.method || 'Cash') === m)) +
       sum(bought.filter((p) => p.method === m));
     return { method: m, in: r2(inflow), out: r2(out), balance: r2(inflow - out) };
   });
@@ -354,6 +357,7 @@ export function methodBalances(methods = [], {
 export function methodLedger(method, {
   payments = [], expenses: allExpenses = [], employeeTx = [], cheques = [], parties = [], employees = [],
   supplierPayments = [], suppliers = [], whExpenses = [], warehouses = [], purchases = [], items = [],
+  whPartyPayments = [], whParties = [],
 } = {}) {
   const expenses = paidExpenses(allExpenses);
   const uncleared = new Set(cheques.filter((c) => c.status !== 'cleared' && c.paymentId).map((c) => c.paymentId));
@@ -396,6 +400,13 @@ export function methodLedger(method, {
       id: e.id, date: e.date, direction: 'out', amount: r2(e.amount),
       desc: `Warehouse ${whName(e.warehouseId)} — ${e.category}${e.note ? ` — ${e.note}` : ''}`,
       relatedType: 'warehouse', relatedId: e.warehouseId,
+    }));
+  whPartyPayments
+    .filter((p) => (p.method || 'Cash') === method)
+    .forEach((p) => rows.push({
+      id: p.id, date: p.date, direction: p.direction === 'paid' ? 'out' : 'in', amount: r2(p.amount),
+      desc: `${p.direction === 'paid' ? 'Paid to' : 'Received from'} ${whParties.find((x) => x.id === p.partyId)?.name || 'warehouse party'} (warehouse)${p.note ? ` — ${p.note}` : ''}`,
+      relatedType: 'whParty', relatedId: p.partyId,
     }));
   paidPurchases(purchases)
     .filter((p) => p.method === method)
@@ -446,16 +457,22 @@ export function balanceSheet(data) {
   // still theirs until a bill uses it — the shop owes it back.
   const customerAdvances = r2((data.partyAdvances || [])
     .reduce((s, a) => s + Math.max(0, (Number(a.amount) || 0) - (Number(a.applied) || 0)), 0));
+  // Warehouse parties' khatas: above zero they owe us, below zero we owe them.
+  const whBalances = [...whPartySummaries(data).values()].map((x) => x.balance);
+  const whReceivable = r2(whBalances.reduce((t, b) => t + Math.max(0, b), 0));
+  const whPayable = r2(whBalances.reduce((t, b) => t + Math.max(0, -b), 0));
   const owns = [
     { label: 'Cash & Bank Balances', value: cash },
     { label: 'Stock Value (at cost)', value: stock },
     ...(whStock ? [{ label: 'Warehouse Stock (at cost)', value: whStock }] : []),
     { label: 'Receivables (party dues)', value: receivable },
     { label: 'Advances paid to suppliers', value: supplierAdvances },
+    ...(whReceivable ? [{ label: 'Warehouse parties owe us', value: whReceivable }] : []),
     { label: 'Assets', value: assetValue },
   ];
   const owes = [
     { label: 'Payables (supplier dues)', value: payable },
+    ...(whPayable ? [{ label: 'Warehouse party dues', value: whPayable }] : []),
     { label: 'Customer advances held', value: customerAdvances },
     { label: 'Unpaid Salaries (this month)', value: unpaidSalaries },
   ];
@@ -1089,4 +1106,192 @@ export function warehouseExpenseTotal(whExpenses = [], warehouseId = null, from 
   return r2(whExpenses
     .filter((e) => (!warehouseId || e.warehouseId === warehouseId) && inRange(e.date, from, to))
     .reduce((s, e) => s + (Number(e.amount) || 0), 0));
+}
+
+/* ------------------------------------------------------ Warehouse parties */
+
+const hasRate = (l) => l.rate !== '' && l.rate !== null && l.rate !== undefined;
+
+/**
+ * A warehouse party's khata, worked out from its movements and payments. The
+ * dashboard and the shared link both build it here, so the party and the shop
+ * always see the same figures.
+ *
+ * Above zero the party owes us; below zero we owe them.
+ *   goods sent to them (stock out)    debit  (+)
+ *   money we paid them                debit  (+)
+ *   goods received from them (in)     credit (−)
+ *   money they paid us                credit (−)
+ * Goods count at the rates on their lines; a line without a rate adds nothing
+ * until one is filled in. A cancelled movement stays on the list, struck
+ * through, at zero.
+ */
+export function whPartyKhata({
+  openingBalance = 0, openingDate = '', moves = [], lines = [], payments = [],
+  itemName = (l) => l.itemName || 'Item',
+} = {}) {
+  const byMove = new Map();
+  lines.forEach((l) => {
+    if (!byMove.has(l.moveId)) byMove.set(l.moveId, []);
+    byMove.get(l.moveId).push(l);
+  });
+  const rows = [];
+  const opening = r2(openingBalance);
+  if (opening) {
+    rows.push({
+      id: 'opening', kind: 'opening', date: dayOf(openingDate) || '', title: 'Opening balance',
+      debit: opening > 0 ? opening : 0, credit: opening < 0 ? -opening : 0,
+    });
+  }
+  moves.filter((m) => m.type === 'in' || m.type === 'out').forEach((m) => {
+    const ls = (byMove.get(m.id) || []).map((l) => {
+      const q = Number(l.qty) || 0;
+      const rated = hasRate(l);
+      return { ...l, name: itemName(l), rated, value: rated ? r2(q * (Number(l.rate) || 0)) : 0 };
+    });
+    const voided = m.status === 'voided';
+    const received = m.type === 'in';
+    const value = r2(ls.reduce((s, l) => s + l.value, 0));
+    const units = r2(ls.reduce((s, l) => s + (Number(l.qty) || 0), 0));
+    rows.push({
+      id: m.id, moveId: m.id, kind: received ? 'in' : 'out', date: m.date, docNo: m.docNo, reference: m.reference || '',
+      title: `${received ? 'Goods received' : 'Goods sent'} — ${m.docNo}`,
+      lines: ls, units, value, voided, unrated: voided ? 0 : ls.filter((l) => !l.rated).length,
+      inQty: received && !voided ? units : 0, outQty: !received && !voided ? units : 0,
+      debit: !voided && !received ? value : 0, credit: !voided && received ? value : 0,
+      createdAt: m.createdAt || '',
+    });
+  });
+  payments.forEach((p) => {
+    const paid = p.direction === 'paid';
+    const amount = r2(p.amount);
+    rows.push({
+      id: p.id, paymentId: p.id, kind: paid ? 'paid' : 'received', date: p.date, method: p.method || '',
+      title: paid ? 'Paid to party' : 'Received from party', note: p.note || '',
+      debit: paid ? amount : 0, credit: paid ? 0 : amount, createdAt: p.createdAt || '',
+    });
+  });
+  const rank = { opening: 0, in: 1, out: 1, paid: 2, received: 2 };
+  rows.sort((a, b) => (a.kind === 'opening' ? -1 : b.kind === 'opening' ? 1 : 0)
+    || String(dayOf(a.date)).localeCompare(String(dayOf(b.date)))
+    || rank[a.kind] - rank[b.kind]
+    || String(a.createdAt || a.docNo || '').localeCompare(String(b.createdAt || b.docNo || '')));
+  let bal = 0;
+  return rows.map((r) => {
+    bal = r2(bal + r.debit - r.credit);
+    return { ...r, balance: bal };
+  });
+}
+
+/** Headline figures of a khata built by whPartyKhata(). */
+export function whPartyTotals(rows = []) {
+  const live = rows.filter((r) => !r.voided);
+  const sum = (kind, key) => r2(live.filter((r) => r.kind === kind).reduce((s, r) => s + (r[key] || 0), 0));
+  return {
+    receivedQty: sum('in', 'inQty'),
+    sentQty: sum('out', 'outQty'),
+    receivedValue: sum('in', 'credit'),
+    sentValue: sum('out', 'debit'),
+    paid: sum('paid', 'debit'),
+    received: sum('received', 'credit'),
+    opening: r2(live.filter((r) => r.kind === 'opening').reduce((s, r) => s + r.debit - r.credit, 0)),
+    unrated: live.reduce((s, r) => s + (r.unrated || 0), 0),
+    moves: live.filter((r) => r.kind === 'in' || r.kind === 'out').length,
+    balance: rows.length ? rows[rows.length - 1].balance : 0,
+  };
+}
+
+/** One party's khata from the dashboard's data. */
+export function whPartyLedger(partyId, data = {}) {
+  const { whParties = [], whMoves = [], whMoveLines = [], whPartyPayments = [], items = [] } = data;
+  const party = whParties.find((p) => p.id === partyId);
+  const moves = whMoves.filter((m) => m.partyId === partyId);
+  const ids = new Set(moves.map((m) => m.id));
+  const names = new Map(items.map((i) => [i.id, i.name]));
+  return whPartyKhata({
+    openingBalance: Number(party?.openingBalance) || 0,
+    openingDate: party?.createdAt || '',
+    moves,
+    lines: whMoveLines.filter((l) => ids.has(l.moveId)),
+    payments: whPartyPayments.filter((p) => p.partyId === partyId),
+    itemName: (l) => names.get(l.itemId) || 'Item',
+  });
+}
+
+/** Every warehouse party's headline figures in one pass: Map<partyId, totals + lastDate>. */
+export function whPartySummaries(data = {}) {
+  const { whParties = [], whMoves = [], whMoveLines = [], whPartyPayments = [] } = data;
+  const out = new Map(whParties.map((p) => {
+    const opening = r2(p.openingBalance);
+    return [p.id, {
+      receivedQty: 0, sentQty: 0, receivedValue: 0, sentValue: 0, paid: 0, received: 0,
+      opening, balance: opening, moves: 0, unrated: 0, lastDate: '',
+    }];
+  }));
+  const partyMoves = new Map();
+  whMoves.forEach((m) => {
+    const s = out.get(m.partyId);
+    if (!s || m.status === 'voided' || (m.type !== 'in' && m.type !== 'out')) return;
+    partyMoves.set(m.id, m);
+    s.moves += 1;
+    if (String(dayOf(m.date)) > s.lastDate) s.lastDate = String(dayOf(m.date));
+  });
+  whMoveLines.forEach((l) => {
+    const m = partyMoves.get(l.moveId);
+    if (!m) return;
+    const s = out.get(m.partyId);
+    const q = Number(l.qty) || 0;
+    const v = hasRate(l) ? q * (Number(l.rate) || 0) : 0;
+    if (!hasRate(l)) s.unrated += 1;
+    if (m.type === 'in') {
+      s.receivedQty += q;
+      s.receivedValue += v;
+      s.balance -= v;
+    } else {
+      s.sentQty += q;
+      s.sentValue += v;
+      s.balance += v;
+    }
+  });
+  whPartyPayments.forEach((p) => {
+    const s = out.get(p.partyId);
+    if (!s) return;
+    const a = Number(p.amount) || 0;
+    if (p.direction === 'paid') {
+      s.paid += a;
+      s.balance += a;
+    } else {
+      s.received += a;
+      s.balance -= a;
+    }
+    if (String(dayOf(p.date)) > s.lastDate) s.lastDate = String(dayOf(p.date));
+  });
+  out.forEach((s) => {
+    ['receivedQty', 'sentQty', 'receivedValue', 'sentValue', 'paid', 'received', 'balance'].forEach((k) => { s[k] = r2(s[k]); });
+  });
+  return out;
+}
+
+/** What went each way with one party, item by item, from a khata's rows. */
+export function whPartyItems(rows = []) {
+  const map = new Map();
+  rows.filter((r) => (r.kind === 'in' || r.kind === 'out') && !r.voided).forEach((r) => {
+    r.lines.forEach((l) => {
+      const key = l.itemId || l.name;
+      if (!map.has(key)) {
+        map.set(key, { key, itemId: l.itemId || '', name: l.name, unit: l.unit || '', inQty: 0, outQty: 0, inValue: 0, outValue: 0, lastDate: '' });
+      }
+      const x = map.get(key);
+      const q = Number(l.qty) || 0;
+      if (r.kind === 'in') {
+        x.inQty = r2(x.inQty + q);
+        x.inValue = r2(x.inValue + l.value);
+      } else {
+        x.outQty = r2(x.outQty + q);
+        x.outValue = r2(x.outValue + l.value);
+      }
+      if (String(dayOf(r.date)) > x.lastDate) x.lastDate = String(dayOf(r.date));
+    });
+  });
+  return [...map.values()].sort((a, b) => (b.inQty + b.outQty) - (a.inQty + a.outQty) || a.name.localeCompare(b.name));
 }

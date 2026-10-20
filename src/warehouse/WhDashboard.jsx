@@ -5,14 +5,14 @@ import {
 } from 'recharts';
 import {
   ArrowDownToLine, ArrowLeftRight, ArrowUpFromLine, Boxes, CircleCheck, ClipboardCheck, ClipboardList, Hourglass, MapPin,
-  PackageX, Plus, Store, TrendingUp, Truck, Wallet, Warehouse,
+  PackageX, Plus, Store, TrendingUp, Truck, Users, Wallet, Warehouse,
 } from 'lucide-react';
 import { useApp } from '../lib/AppContext.jsx';
 import {
   money, r2, fmtDate, isoDate, qty, today, rangeFor, inRange, daysSince,
 } from '../lib/format.js';
 import {
-  MOVE_TYPES, moveEffect, warehouseExpenseTotal, warehouseStockMap,
+  MOVE_TYPES, moveEffect, warehouseExpenseTotal, warehouseStockMap, whPartySummaries,
 } from '../lib/calc.js';
 import { stockEvents } from '../lib/reports.js';
 import {
@@ -39,6 +39,20 @@ export default function WhDashboard() {
   const day = today();
   const month = rangeFor('month');
   const canMove = access.can('whMoves');
+  const sc = access.seesCost;
+
+  // Parties with something on their khata: largest balances first for whoever
+  // sees money, most recent activity first for everyone else.
+  const parties = useMemo(() => {
+    if (!access.can('whParties')) return [];
+    const sums = whPartySummaries(data);
+    return (data.whParties || [])
+      .filter((p) => p.status !== 'archived')
+      .map((p) => ({ ...p, ...sums.get(p.id) }))
+      .filter((p) => p.moves > 0 || Math.abs(p.balance) > 0.004)
+      .sort((a, b) => (sc ? Math.abs(b.balance) - Math.abs(a.balance) : 0) || String(b.lastDate).localeCompare(String(a.lastDate)))
+      .slice(0, 6);
+  }, [data, access, sc]);
 
   const stock = useMemo(() => warehouseStockMap(data), [data]);
   /** itemId -> quantity held across the warehouses in view. */
@@ -353,6 +367,39 @@ export default function WhDashboard() {
           ) : <Empty icon={Wallet} title="No spending this month" message="Rent, labour and loading costs show here." />}
         </Card>
       </div>
+
+      {access.can('whParties') && (
+        <Card
+          title="Parties & Khata"
+          subtitle={sc ? 'Largest balances — who owes whom' : 'Most recent dealings'}
+          tight
+          className="mb-2"
+          actions={<Button size="sm" onClick={() => navigate('/warehouse/parties')}>All parties</Button>}
+        >
+          {parties.length ? parties.map((p) => (
+            <div key={p.id} className="alert-row clickable" onClick={() => navigate(`/warehouse/party/${p.id}`)}>
+              <span className={`ico ${!sc || Math.abs(p.balance) <= 0.004 ? 'info' : p.balance > 0 ? 'danger' : 'warning'}`}><Users size={15} /></span>
+              <div className="body">
+                <div className="t">{p.name}</div>
+                <div className="s">{[p.lastDate && `Last ${fmtDate(p.lastDate)}`, `In ${qty(p.receivedQty)}`, `Out ${qty(p.sentQty)}`].filter(Boolean).join(' · ')}</div>
+              </div>
+              {sc ? (
+                <span className="num" style={{ textAlign: 'right' }}>
+                  {money(Math.abs(p.balance))}
+                  <div className="small muted">{p.balance > 0.004 ? 'owes you' : p.balance < -0.004 ? 'you owe' : 'settled'}</div>
+                </span>
+              ) : <span className="num">{p.moves} docs</span>}
+            </div>
+          )) : (
+            <Empty
+              icon={Users}
+              title="No party dealings yet"
+              message="Pick a party in Stock In or Stock Out and its khata shows here."
+              action={<Button icon={Plus} onClick={() => navigate('/warehouse/parties')}>Add a party</Button>}
+            />
+          )}
+        </Card>
+      )}
 
       <Card
         title="In vs Out"

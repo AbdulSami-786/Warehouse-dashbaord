@@ -379,6 +379,38 @@ export const SPECS = {
     },
   },
 
+  whParties: {
+    label: 'warehouse parties', title: 'Warehouse parties',
+    help: 'Opening balance: a plus amount means the party owes you, a minus amount means you owe them.',
+    fields: [
+      F('name', 'Party name', ['party', 'supplier', 'customer', 'name', 'firm', 'company'], { required: true }),
+      F('phone', 'Phone', ['mobile', 'mobileno', 'phoneno', 'contact', 'cell']),
+      F('city', 'City', ['town', 'area']),
+      F('address', 'Address', ['location']),
+      F('openingBalance', 'Opening balance', ['opening', 'balance', 'previousbalance'], { cost: true }),
+      F('note', 'Note', ['remarks']),
+    ],
+    example: ['City Balloon Factory', '0300-1112223', 'Lahore', 'Shahdara Industrial Area', '-25000', ''],
+    plan(recs, data) {
+      const names = new Set((data.whParties || []).map((p) => nameKey(p.name)));
+      const phones = new Set((data.whParties || []).map((p) => phoneKey(p.phone)).filter(Boolean));
+      return recs.map((r) => {
+        if (!r.name) return { row: r.$row, error: 'Party name is empty' };
+        if (names.has(nameKey(r.name))) return { row: r.$row, skip: `"${r.name}" already exists` };
+        const ph = phoneKey(r.phone);
+        if (ph && phones.has(ph)) return { row: r.$row, skip: `Phone ${r.phone} is already on another warehouse party` };
+        const opening = r.openingBalance === '' ? 0 : toNumber(r.openingBalance);
+        if (opening === null) return { row: r.$row, error: `Opening balance "${r.openingBalance}" is not a number` };
+        names.add(nameKey(r.name));
+        if (ph) phones.add(ph);
+        return {
+          row: r.$row, ref: r.name,
+          op: { action: 'saveWhParty', payload: { name: r.name, phone: r.phone, city: r.city, address: r.address, openingBalance: opening, note: r.note } },
+        };
+      });
+    },
+  },
+
   whExpenses: {
     label: 'warehouse expenses', title: 'Warehouse expenses',
     fields: [
@@ -592,15 +624,19 @@ export const SPECS = {
           lines.push({ itemId: it.id, qty: ctx.baseQty(it, q, r.unit), unit: it.baseUnit, rate: rate === null ? '' : ctx.basePrice(it, rate, q, r.unit), note: r.note || '' });
         }
         if (missing.length) return { rows: rowNos, ref, error: `Item${missing.length === 1 ? '' : 's'} not found: ${[...new Set(missing)].join(', ')}`, need: { items: missing } };
+        // Stock in / out name who the goods came from or went to: that warehouse party's khata.
+        const withParty = (type === 'in' || type === 'out') && head.party;
+        const wp = withParty ? ctx.whParty(head.party) : null;
         return {
           rows: rowNos, ref, sign: ['in', 'from-shop', 'adjust-in'].includes(type) ? 1 : -1, date,
           op: {
             action: 'saveWhMove',
             payload: {
-              type, warehouseId: wh.id, toWarehouseId: dest ? dest.id : '', date, partyName: head.party || '', reference: head.reference || '',
+              type, warehouseId: wh.id, toWarehouseId: dest ? dest.id : '', date, partyName: head.party || '', partyId: wp ? wp.id : '', reference: head.reference || '',
               vehicleNo: head.vehicleNo || '', driverName: head.driverName || '', reason: type.startsWith('adjust') ? 'Imported' : '', note: head.note || '', lines,
             },
           },
+          ...(withParty && !wp ? { need: { whParties: [head.party] } } : {}),
         };
       });
       // Goods must arrive before they can leave: each day's incoming documents first.
@@ -653,6 +689,7 @@ export function makeContext(data, { methods = [], roundingRule = 'nearest1' } = 
     party: byName(data.parties),
     item: byName(data.items),
     supplier: byName(data.suppliers),
+    whParty: byName(data.whParties),
     warehouse: (name) => byName(whs)(name) || whByCode.get(key(name)) || null,
     method: (m) => allMethods.find((x) => key(x) === key(m)) || 'Cash',
     // A quantity in the item's alternate unit (cartons) is stored in its base unit.
@@ -664,7 +701,7 @@ export function makeContext(data, { methods = [], roundingRule = 'nearest1' } = 
 /** Everything a file would do, before anything is saved. */
 export function preview(spec, records, data, opts) {
   const ctx = makeContext(data, opts);
-  const out = { ops: [], skipped: [], errors: [], need: { parties: new Set(), items: new Set(), suppliers: new Set() } };
+  const out = { ops: [], skipped: [], errors: [], need: { parties: new Set(), items: new Set(), suppliers: new Set(), whParties: new Set() } };
   const bad = records.filter((r) => r.$badDate);
   const good = records.filter((r) => !r.$badDate);
   bad.forEach((r) => out.errors.push({ rows: [r.$row], ref: '', message: r.$badDate }));
@@ -684,13 +721,14 @@ export function preview(spec, records, data, opts) {
   return out;
 }
 
-/** Saves that create the parties, suppliers and items a file names but the system lacks. */
+/** Saves that create the parties, suppliers, items and warehouse parties a file names but the system lacks. */
 export function creationOps(need, data) {
   const ops = [];
   const exists = (list, n) => (list || []).some((x) => nameKey(x.name) === nameKey(n));
   [...need.parties].forEach((n) => { if (!exists(data.parties, n)) ops.push({ action: 'saveParty', payload: { name: n }, ref: `New party ${n}` }); });
   [...need.suppliers].forEach((n) => { if (!exists(data.suppliers, n)) ops.push({ action: 'saveSupplier', payload: { name: n, openingBalance: 0 }, ref: `New supplier ${n}` }); });
   [...need.items].forEach((n) => { if (!exists(data.items, n)) ops.push({ action: 'saveItem', payload: { name: n, baseUnit: 'Piece' }, ref: `New item ${n}` }); });
+  [...(need.whParties || [])].forEach((n) => { if (!exists(data.whParties, n)) ops.push({ action: 'saveWhParty', payload: { name: n }, ref: `New warehouse party ${n}` }); });
   return ops;
 }
 

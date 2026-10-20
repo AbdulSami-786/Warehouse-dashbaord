@@ -26,7 +26,9 @@ export default function Activity({ scope = 'shop' }) {
   const [preset, setPreset] = useState('month');
   const [custom, setCustom] = useState({ from: '', to: '' });
   const range = useMemo(() => rangeFor(preset, custom), [preset, custom]);
-  const inScope = (e) => (scope === 'warehouse' ? e.entityType === 'warehouse' : e.entityType !== 'warehouse');
+  // Warehouse records log as 'warehouse', 'warehouse party', 'warehouse payment'…
+  const isWh = (e) => String(e.entityType || '').startsWith('warehouse');
+  const inScope = (e) => (scope === 'warehouse' ? isWh(e) : !isWh(e));
   const entities = useMemo(() => [...new Set(data.activityLog.filter(inScope).map((e) => e.entityType))].sort(), [data.activityLog, scope]);
   const rows = useMemo(() => {
     const s = norm(q);

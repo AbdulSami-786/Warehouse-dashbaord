@@ -24,7 +24,7 @@ function emptyDb() {
     cheques: [], partyAdvances: [], purchases: [], employees: [], employeeTx: [], expenses: [],
     stockLoss: [], assets: [], activityLog: [], users: [], partyLedgerLinks: [], suppliers: [],
     purchaseBills: [], supplierPayments: [], supplierReturns: [],
-    warehouses: [], whMoves: [], whMoveLines: [], whExpenses: [],
+    warehouses: [], whMoves: [], whMoveLines: [], whExpenses: [], whParties: [], whPartyPayments: [],
     settings: {
       shopName: CONFIG.defaultShopName, phone: '', address: '', email: '', logoUrl: '',
       roundingRule: 'nearest1', priceAlertThreshold: 15, defaultCreditDays: 7, customMethods: [],
@@ -88,7 +88,25 @@ function meOf(db) {
 // Set while an import runs, so a bill may keep the number it had in the file.
 let importing = false;
 const IMPORT_ACTIONS = new Set(['saveParty', 'saveItem', 'saveSupplier', 'saveEmployee', 'saveExpense', 'saveAsset', 'saveBill',
-  'savePurchaseBill', 'saveWarehouse', 'saveWhMove', 'saveWhExpense']);
+  'savePurchaseBill', 'saveWarehouse', 'saveWhMove', 'saveWhExpense', 'saveWhParty']);
+
+/** Money on a warehouse party's khata is for those who see cost prices (MONEY_ACTIONS in Code.gs). */
+function assertSeesMoney(db) {
+  const me = meOf(db);
+  if (me && !me.seesCost) throw new Error('Only an admin can record money or rates.');
+}
+
+/** Movements typed before a party existed carry only its name: link them to it. */
+function linkMovesByName(db, party) {
+  let n = 0;
+  db.whMoves.forEach((m) => {
+    if ((m.type === 'in' || m.type === 'out') && !m.partyId && nameKey(m.partyName) && nameKey(m.partyName) === nameKey(party.name)) {
+      m.partyId = party.id;
+      n += 1;
+    }
+  });
+  return n;
+}
 const publicUser = (u) => ({ ...accessOf(u), id: u.id, pages: u.role === 'superadmin' ? null : accessOf(u).pages, status: u.status === 'disabled' ? 'disabled' : 'active', createdAt: u.createdAt || '' });
 
 /** An imported bill's own number, refused if another bill already has it. */
@@ -373,8 +391,10 @@ async function perform(action, p = {}) {
       return rec;
     }
 
-    case 'setPartyLock': {
-      const party = db.parties.find((x) => x.id === p.partyId);
+    case 'setPartyLock':
+    case 'setWhPartyLock': {
+      const wh = action === 'setWhPartyLock';
+      const party = (wh ? db.whParties : db.parties).find((x) => x.id === p.partyId);
       if (!party) throw new Error('Party not found');
       const next = String(p.password || '');
       if (next && next.length < 4) throw new Error('Party password must be at least 4 characters');
@@ -393,7 +413,7 @@ async function perform(action, p = {}) {
         party.lockSalt = '';
         party.lockHash = '';
       }
-      log(db, 'party', party.id, 'edit', next
+      log(db, wh ? 'warehouse party' : 'party', party.id, 'edit', next
         ? before.lockHash ? `Changed ledger password for "${party.name}"` : `Locked ledger of "${party.name}" with a password`
         : `Removed ledger password from "${party.name}"`);
       save();
@@ -1248,22 +1268,31 @@ async function perform(action, p = {}) {
     }
 
     /* ----- Shared ledger links ----- */
-    case 'createShareLink': {
+    case 'createShareLink':
+    case 'createWhShareLink': {
+      const wh = action === 'createWhShareLink';
+      if (wh) assertSeesMoney(db);
       if (!p.password || p.password.length < 6) throw new Error('Set a password of at least 6 characters');
+      if (!(wh ? db.whParties : db.parties).some((x) => x.id === p.partyId)) throw new Error('Party not found');
       const token = uid('shr');
       const hash = await sha256(p.password);
       db.partyLedgerLinks = db.partyLedgerLinks.filter((l) => l.partyId !== p.partyId);
       db.partyLedgerLinks.push({ partyId: p.partyId, token, passwordHash: hash, active: true, createdAt: new Date().toISOString() });
-      log(db, 'shareLink', token, 'create', 'Shared ledger link created');
+      log(db, wh ? 'warehouse party' : 'shareLink', p.partyId, 'create', 'Shared ledger link created');
       save();
       return { token };
     }
 
     case 'revokeShareLink':
+    case 'revokeWhShareLink': {
+      const wh = action === 'revokeWhShareLink';
+      if (wh) assertSeesMoney(db);
+      if (!(wh ? db.whParties : db.parties).some((x) => x.id === p.partyId)) throw new Error('Party not found');
       db.partyLedgerLinks = db.partyLedgerLinks.filter((l) => l.partyId !== p.partyId);
-      log(db, 'shareLink', p.partyId, 'void', 'Shared ledger link revoked');
+      log(db, wh ? 'warehouse party' : 'shareLink', p.partyId, 'void', 'Shared ledger link revoked');
       save();
       return { ok: true };
+    }
 
     case 'openSharedLedger': {
       const key = `share:${p.token}`;
@@ -1276,6 +1305,24 @@ async function perform(action, p = {}) {
         throw new Error('Incorrect password');
       }
       clearFailures(key);
+      const whParty = db.whParties.find((x) => x.id === link.partyId);
+      if (whParty) {
+        const moves = db.whMoves.filter((m) => m.partyId === whParty.id);
+        const ids = new Set(moves.map((m) => m.id));
+        return {
+          kind: 'warehouse',
+          party: { name: whParty.name, phone: whParty.phone, city: whParty.city },
+          shopName: db.settings.shopName,
+          openingBalance: Number(whParty.openingBalance) || 0,
+          moves: moves.map((m) => ({ id: m.id, docNo: m.docNo, type: m.type, date: m.date, reference: m.reference, vehicleNo: m.vehicleNo, status: m.status })),
+          lines: db.whMoveLines.filter((l) => ids.has(l.moveId)).map((l) => ({
+            id: l.id, moveId: l.moveId, qty: l.qty, unit: l.unit, rate: l.rate, note: l.note,
+            itemName: db.items.find((i) => i.id === l.itemId)?.name || 'Item',
+          })),
+          payments: db.whPartyPayments.filter((x) => x.partyId === whParty.id)
+            .map((x) => ({ id: x.id, direction: x.direction, amount: x.amount, date: x.date, method: x.method, note: x.note })),
+        };
+      }
       const party = db.parties.find((x) => x.id === link.partyId);
       const bills = db.bills.filter((b) => b.partyId === link.partyId);
       const ids = new Set(bills.map((b) => b.id));
@@ -1343,24 +1390,32 @@ async function perform(action, p = {}) {
         if (!(Number(l.qty) > 0)) throw new Error(`Line ${i + 1}: quantity must be greater than zero`);
         if (l.rate !== undefined && l.rate !== '' && !(Number(l.rate) >= 0)) throw new Error(`Line ${i + 1}: rate must be zero or more`);
       });
+      let party = null;
+      if (p.partyId) {
+        if (p.type !== 'in' && p.type !== 'out') throw new Error('Only stock in and stock out have a party');
+        party = db.whParties.find((x) => x.id === p.partyId);
+        if (!party) throw new Error('Party not found');
+        if (party.status === 'archived') throw new Error(`Party "${party.name}" is archived. Restore it first.`);
+      }
       // Goods leaving a warehouse must be there to leave.
       if (meta.sign < 0) assertWarehouseHas(db, wh, lines);
       const date = p.date || today();
       const move = {
         id: uid('whm'), docNo: nextDocNo(db.whMoves, meta.prefix, date), type: p.type,
         warehouseId: wh.id, toWarehouseId: dest ? dest.id : '', date,
-        partyName: String(p.partyName || '').trim(), reference: String(p.reference || '').trim(),
+        partyName: party ? party.name : String(p.partyName || '').trim(), reference: String(p.reference || '').trim(),
         vehicleNo: String(p.vehicleNo || '').trim(), driverName: String(p.driverName || '').trim(),
         reason: p.reason || '', note: p.note || '', status: 'active',
         createdAt: new Date().toISOString(), createdBy: getSession()?.username || 'system',
-        voidReason: '', voidedAt: '',
+        voidReason: '', voidedAt: '', partyId: party ? party.id : '',
       };
       db.whMoves.push(move);
+      const takesRates = meOf(db)?.seesCost !== false;
       lines.forEach((l) => {
         const item = db.items.find((it) => it.id === l.itemId);
         const row = {
           id: uid('wml'), moveId: move.id, itemId: l.itemId, qty: r2(l.qty),
-          unit: l.unit || item?.baseUnit || 'Piece', rate: l.rate === '' || l.rate === undefined ? '' : r2(l.rate),
+          unit: l.unit || item?.baseUnit || 'Piece', rate: !takesRates || l.rate === '' || l.rate === undefined || l.rate === null ? '' : r2(l.rate),
           note: l.note || '',
         };
         db.whMoveLines.push(row);
@@ -1408,6 +1463,100 @@ async function perform(action, p = {}) {
       const rec = db.whExpenses[i];
       db.whExpenses.splice(i, 1);
       log(db, 'warehouse', rec.id, 'delete', `Deleted warehouse expense ${rec.category} — ${rec.amount}` + (p.reason ? ` — ${p.reason}` : ''), rec, null);
+      save();
+      return { ok: true };
+    }
+
+    case 'setWhMoveRates': {
+      assertSeesMoney(db);
+      const move = db.whMoves.find((m) => m.id === p.id);
+      if (!move) throw new Error('Movement not found');
+      if (move.status === 'voided') throw new Error('This movement is cancelled');
+      const changes = p.rates || [];
+      if (!changes.length) throw new Error('Nothing to change');
+      const isBlank = (v) => v === '' || v === null || v === undefined;
+      changes.forEach((c, n) => {
+        if (!db.whMoveLines.some((l) => l.id === c.id && l.moveId === move.id)) throw new Error(`Line ${n + 1} is not part of ${move.docNo}`);
+        if (!isBlank(c.rate) && !(Number(c.rate) >= 0)) throw new Error(`Line ${n + 1}: rate must be zero or more`);
+      });
+      changes.forEach((c) => {
+        const l = db.whMoveLines.find((x) => x.id === c.id);
+        l.rate = isBlank(c.rate) ? '' : r2(c.rate);
+      });
+      log(db, 'warehouse rates', move.id, 'edit', `Rates updated on ${move.docNo}${move.partyName ? ` (${move.partyName})` : ''}`);
+      save();
+      return { ok: true };
+    }
+
+    /* ----- Warehouse parties (see the same actions in Code.gs) ----- */
+    case 'saveWhParty': {
+      const name = String(p.name || '').trim();
+      if (!name) throw new Error('Party name is required');
+      const dup = db.whParties.find((x) => x.id !== p.id && nameKey(x.name) === nameKey(name));
+      if (dup) throw new Error(`A warehouse party called "${dup.name}" already exists. Use a different name, or open the existing one.`);
+      const ph = phoneKey(p.phone);
+      const phDup = ph && db.whParties.find((x) => x.id !== p.id && phoneKey(x.phone) === ph);
+      if (phDup) throw new Error(`This mobile number is already on warehouse party "${phDup.name}".`);
+      const fields = {
+        name, phone: String(p.phone || '').trim(), city: String(p.city || '').trim(),
+        address: String(p.address || '').trim(), note: String(p.note || '').trim(),
+      };
+      if (meOf(db)?.seesCost !== false && p.openingBalance !== undefined) {
+        const opening = p.openingBalance === '' || p.openingBalance === null ? 0 : Number(p.openingBalance);
+        if (!Number.isFinite(opening)) throw new Error('Opening balance must be a number');
+        fields.openingBalance = r2(opening);
+      }
+      if (p.id) {
+        const i = db.whParties.findIndex((x) => x.id === p.id);
+        if (i < 0) throw new Error('Party not found');
+        const before = { ...db.whParties[i] };
+        db.whParties[i] = { ...before, ...fields };
+        log(db, 'warehouse party', p.id, 'edit', `Edited warehouse party "${name}"`, before, db.whParties[i]);
+        save();
+        return db.whParties[i];
+      }
+      const rec = {
+        id: uid('whp'), ...fields, openingBalance: fields.openingBalance || 0, status: 'active',
+        createdAt: new Date().toISOString(), lockHash: '', lockSalt: '',
+      };
+      db.whParties.push(rec);
+      const linked = linkMovesByName(db, rec);
+      log(db, 'warehouse party', rec.id, 'create', `Added warehouse party "${rec.name}"`
+        + (linked ? ` — ${linked} earlier movement${linked === 1 ? '' : 's'} linked by name` : ''));
+      save();
+      return rec;
+    }
+
+    case 'archiveWhParty':
+      return toggleArchive(db, db.whParties, p.id, 'warehouse party', 'Party');
+
+    case 'addWhPartyPayment': {
+      assertSeesMoney(db);
+      const party = db.whParties.find((x) => x.id === p.partyId);
+      if (!party) throw new Error('Party not found');
+      if (p.direction !== 'paid' && p.direction !== 'received') throw new Error('Choose whether you paid them or they paid you');
+      const amount = Number(p.amount);
+      if (!Number.isFinite(amount) || amount <= 0) throw new Error('Enter an amount greater than zero');
+      const method = String(p.method || 'Cash');
+      assertMethod(method);
+      const rec = {
+        id: uid('wpp'), partyId: party.id, direction: p.direction, amount: r2(amount), date: p.date || today(),
+        method, note: String(p.note || '').trim(), createdAt: new Date().toISOString(), createdBy: getSession()?.username || 'system',
+      };
+      db.whPartyPayments.push(rec);
+      log(db, 'warehouse payment', rec.id, 'create', `${rec.direction === 'paid' ? `Paid ${rec.amount} to` : `Received ${rec.amount} from`} warehouse party "${party.name}" (${method})`);
+      save();
+      return rec;
+    }
+
+    case 'deleteWhPartyPayment': {
+      assertSeesMoney(db);
+      const i = db.whPartyPayments.findIndex((x) => x.id === p.id);
+      if (i < 0) throw new Error('Payment not found');
+      const rec = db.whPartyPayments[i];
+      const party = db.whParties.find((x) => x.id === rec.partyId);
+      db.whPartyPayments.splice(i, 1);
+      log(db, 'warehouse payment', rec.id, 'delete', `Deleted ${rec.direction === 'paid' ? 'payment' : 'receipt'} of ${rec.amount}${party ? ` — ${party.name}` : ''}${p.reason ? ` — ${p.reason}` : ''}`, rec, null);
       save();
       return { ok: true };
     }

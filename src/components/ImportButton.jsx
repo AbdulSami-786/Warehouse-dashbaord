@@ -62,7 +62,7 @@ export default function ImportButton({ kind, label = 'Import' }) {
   const opts = { methods, roundingRule: settings.roundingRule };
   const records = useMemo(() => (file ? mapRows(spec, file.rows, mapping) : []), [file, mapping, spec]);
   const plan = useMemo(() => (file ? preview(spec, records, data, opts) : null), [file, records, data, spec]); // eslint-disable-line react-hooks/exhaustive-deps
-  const needCount = plan ? plan.need.parties.size + plan.need.items.size + plan.need.suppliers.size : 0;
+  const needCount = plan ? plan.need.parties.size + plan.need.items.size + plan.need.suppliers.size + plan.need.whParties.size : 0;
   const missingRequired = spec.fields.filter((f) => f.required && !mapping[f.key]);
 
   if (!access.isSuper || !spec) return null;
@@ -231,7 +231,7 @@ export default function ImportButton({ kind, label = 'Import' }) {
                         <input type="checkbox" checked={createMissing} onChange={(e) => setCreateMissing(e.target.checked)} />
                         <span>
                           Add the {needCount} missing name{needCount === 1 ? '' : 's'} first
-                          {' '}({[...plan.need.parties, ...plan.need.suppliers, ...plan.need.items].slice(0, 6).join(', ')}{needCount > 6 ? '…' : ''}),
+                          {' '}({[...plan.need.parties, ...plan.need.suppliers, ...plan.need.whParties, ...plan.need.items].slice(0, 6).join(', ')}{needCount > 6 ? '…' : ''}),
                           then import the rows that need them.
                         </span>
                       </label>

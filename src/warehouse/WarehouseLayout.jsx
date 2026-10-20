@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   ArrowDownToLine, ArrowLeftRight, ArrowUpFromLine, Boxes, ClipboardList, Ellipsis, LayoutDashboard, Package, Plus,
-  ScrollText, Settings, SlidersHorizontal, Store, Wallet, Warehouse, ClipboardCheck, ChartColumn, ShieldCheck,
+  ScrollText, Settings, SlidersHorizontal, Store, Wallet, Warehouse, ClipboardCheck, ChartColumn, ShieldCheck, Users,
 } from 'lucide-react';
 import { useApp } from '../lib/AppContext.jsx';
 import { Frame } from '../components/Layout.jsx';
@@ -15,6 +15,7 @@ export const WH_NAV = [
       { to: '/warehouse', icon: LayoutDashboard, label: 'Overview', end: true, page: 'whDashboard' },
       { to: '/warehouse/list', icon: Warehouse, label: 'Warehouses', page: 'warehouses' },
       { to: '/warehouse/stock', icon: Boxes, label: 'Stock', page: 'whStock' },
+      { to: '/warehouse/parties', icon: Users, label: 'Parties & Khata', page: 'whParties' },
     ],
   },
   {

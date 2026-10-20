@@ -1,7 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import {
   ArrowDownToLine, ArrowLeftRight, ArrowUpFromLine, ChartColumn, ClipboardCheck, ClipboardList, LogOut, Package, ScrollText, Settings,
-  ShieldCheck, SlidersHorizontal, Store, Wallet, Warehouse,
+  ShieldCheck, SlidersHorizontal, Store, Users, Wallet, Warehouse,
 } from 'lucide-react';
 import { useApp } from '../lib/AppContext.jsx';
 import { SHOP_PAGES } from '../lib/permissions.js';
@@ -19,6 +19,7 @@ const SECTIONS = [
     { to: '/warehouse/count', icon: ClipboardCheck, label: 'Stock Count', desc: 'Count the shelves, fix every difference at once', page: 'whCount' },
   ] },
   { label: 'Records', items: [
+    { to: '/warehouse/parties', icon: Users, label: 'Parties & Khata', desc: 'Suppliers and customers — goods, payments, share link', page: 'whParties' },
     { to: '/warehouse/list', icon: Warehouse, label: 'Warehouses', desc: 'Add, edit, archive', page: 'warehouses' },
     { to: '/warehouse/moves', icon: ClipboardList, label: 'All Movements', desc: 'Every document', page: 'whMoves' },
     { to: '/warehouse/expenses', icon: Wallet, label: 'Warehouse Expenses', desc: 'Rent, labour, loading…', page: 'whExpenses' },

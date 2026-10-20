@@ -67,7 +67,7 @@ export default function Settings() {
   const removeMethod = (m) => {
     // A method's balance is worked out from the records that name it. Removing
     // one still in use would drop that money out of every account total.
-    const used = [data.payments, data.expenses, data.employeeTx, data.supplierPayments, data.whExpenses, data.purchases]
+    const used = [data.payments, data.expenses, data.employeeTx, data.supplierPayments, data.whExpenses, data.purchases, data.whPartyPayments]
       .some((rows) => (rows || []).some((r) => r.method === m));
     if (used) {
       toast(`"${m}" has money recorded against it, so it cannot be removed.`, 'error');

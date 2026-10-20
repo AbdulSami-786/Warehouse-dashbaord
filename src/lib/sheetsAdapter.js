@@ -21,6 +21,7 @@ const RETRYABLE = new Set([
   'setOffParty',
   'saveWarehouse', 'saveWhMove', 'saveWhExpense',
   'saveStockCount', 'importBatch', 'listUsers',
+  'saveWhParty', 'addWhPartyPayment',
 ]);
 
 async function post(body) {

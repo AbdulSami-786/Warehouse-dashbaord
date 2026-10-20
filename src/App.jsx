@@ -44,6 +44,7 @@ import StockCount from './warehouse/StockCount.jsx';
 import WhExpenses from './warehouse/WhExpenses.jsx';
 import WhReports from './warehouse/WhReports.jsx';
 import WhMore from './warehouse/WhMore.jsx';
+import WhParties, { WhPartyLedgerGate } from './warehouse/WhParties.jsx';
 
 /** The first page of a system this user may open, or null. */
 function firstPage(system, access) {
@@ -157,7 +158,9 @@ function AppRoutes() {
         <Route path="w/:id" element={W('warehouses', <WarehouseDetail />)} />
         <Route path="new/:kind" element={W('whMoves', <MoveForm />)} />
         <Route path="moves" element={W('whMoves', <Moves />)} />
-        <Route path="move/:id" element={W('whMoves', <MoveView />)} />
+        <Route path="move/:id" element={W(['whMoves', 'whParties'], <MoveView />)} />
+        <Route path="parties" element={W('whParties', <WhParties />)} />
+        <Route path="party/:id" element={W('whParties', <WhPartyLedgerGate />)} />
         <Route path="count" element={W('whCount', <StockCount />)} />
         <Route path="stock" element={W('whStock', <Stock />)} />
         <Route path="item/:itemId" element={W(['whStock', 'whDashboard', 'whMoves'], <ItemCard />)} />

@@ -36,6 +36,7 @@ export const PAGES = [
   { key: 'warehouses', label: 'Warehouses', system: 'warehouse' },
   { key: 'whStock', label: 'Warehouse stock', system: 'warehouse' },
   { key: 'whMoves', label: 'Stock in / out / transfer', system: 'warehouse' },
+  { key: 'whParties', label: 'Warehouse parties & khata', system: 'warehouse' },
   { key: 'whCount', label: 'Stock count', system: 'warehouse' },
   { key: 'whExpenses', label: 'Warehouse expenses', system: 'warehouse' },
   { key: 'whReports', label: 'Warehouse reports', system: 'warehouse' },
@@ -48,7 +49,7 @@ export const COST_PAGES = new Set(PAGES.filter((p) => p.cost).map((p) => p.key))
 export const PRESETS = [
   { label: 'Salesman', pages: ['dashboard', 'newBill', 'bills', 'returns', 'parties', 'outstanding', 'items'] },
   { label: 'Cashier', pages: ['dashboard', 'newBill', 'bills', 'parties', 'outstanding', 'cheques', 'expenses', 'ledgerBook'] },
-  { label: 'Warehouse keeper', pages: ['whDashboard', 'warehouses', 'whStock', 'whMoves', 'whCount', 'whExpenses', 'whReports'] },
+  { label: 'Warehouse keeper', pages: ['whDashboard', 'warehouses', 'whStock', 'whMoves', 'whParties', 'whCount', 'whExpenses', 'whReports'] },
   { label: 'Everything (no cost)', pages: PAGES.filter((p) => !p.cost).map((p) => p.key) },
 ];
 
@@ -82,7 +83,8 @@ export function accessOf(user) {
   return { username: user.username, name: user.name || user.username, role, pages, seesCost: role !== 'staff' };
 }
 
-const COST_ACTIVITY = new Set(['purchase', 'purchaseBill', 'supplierPayment', 'supplierReturn', 'supplier', 'stockLoss']);
+const COST_ACTIVITY = new Set(['purchase', 'purchaseBill', 'supplierPayment', 'supplierReturn', 'supplier', 'stockLoss',
+  'warehouse payment', 'warehouse rates']);
 const blank = (rows = [], keys) => rows.map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, keys.includes(k) ? '' : v])));
 
 /** The database as someone who may not see cost prices receives it (stripCostData in Code.gs). */
@@ -97,11 +99,13 @@ export function stripCostData(db) {
     supplierPayments: [],
     suppliers: [],
     whMoveLines: blank(db.whMoveLines, ['rate']),
+    whParties: blank(db.whParties, ['openingBalance']),
+    whPartyPayments: [],
     stockLoss: blank(db.stockLoss, ['estimatedValue']),
     expenses: (db.expenses || []).filter((e) => !e.linkedStockLossId),
     activityLog: blank((db.activityLog || []).filter((l) => !COST_ACTIVITY.has(l.entityType)), ['oldValue', 'newValue']),
   };
 }
 
-export const SHOP_PAGES =PAGES.filter((p) => p.system !== 'warehouse').map((p) => p.key);
+export const SHOP_PAGES = PAGES.filter((p) => p.system !== 'warehouse').map((p) => p.key);
 export const WAREHOUSE_PAGES = [...PAGES.filter((p) => p.system !== 'shop').map((p) => p.key), 'items'];

@@ -57,7 +57,8 @@ export function UnlockLedger({ party, onUnlocked, onBack }) {
   );
 }
 
-export function PartyLockModal({ open, onClose, party }) {
+/** `warehouse` for a warehouse party's khata, which keeps its password the same way. */
+export function PartyLockModal({ open, onClose, party, warehouse = false }) {
   const { mutate } = useApp();
   const locked = isLocked(party);
   const [f, setF] = useState({ current: '', next: '', confirm: '' });
@@ -80,7 +81,7 @@ export function PartyLockModal({ open, onClose, party }) {
     // Whoever just set the password should not be locked out of the page they are on.
     if (next) markUnlocked(party.id);
     try {
-      await mutate(() => api.setPartyLock(party.id, next, f.current),
+      await mutate(() => (warehouse ? api.setWhPartyLock : api.setPartyLock)(party.id, next, f.current),
         next ? (locked ? 'Party password changed' : 'Ledger locked with a password') : 'Password removed');
       if (!next) relock(party.id);
       onClose();
@@ -472,7 +473,8 @@ export function SetOffModal({ open, onClose, party, receivable, payable }) {
   );
 }
 
-export function ShareLedgerModal({ open, onClose, party, existing }) {
+/** `warehouse` shares a warehouse party's khata instead of a shop customer's bills. */
+export function ShareLedgerModal({ open, onClose, party, existing, warehouse = false }) {
   const { mutate, toast } = useApp();
   const [pw, setPw] = useState('');
   const [busy, setBusy] = useState(false);
@@ -484,7 +486,7 @@ export function ShareLedgerModal({ open, onClose, party, existing }) {
     if (pw.length < 6) return toast('Use a password of at least 6 characters', 'error');
     setBusy(true);
     try {
-      const res = await mutate(() => api.createShareLink(party.id, pw), 'Share link created');
+      const res = await mutate(() => (warehouse ? api.createWhShareLink : api.createShareLink)(party.id, pw), 'Share link created');
       setToken(res.token);
       setPw('');
     } catch { /* toasted */ } finally {
@@ -494,7 +496,7 @@ export function ShareLedgerModal({ open, onClose, party, existing }) {
   const revoke = async () => {
     setBusy(true);
     try {
-      await mutate(() => api.revokeShareLink(party.id), 'Share link revoked');
+      await mutate(() => (warehouse ? api.revokeWhShareLink : api.revokeShareLink)(party.id), 'Share link revoked');
       setToken('');
     } catch { /* toasted */ } finally {
       setBusy(false);
@@ -511,7 +513,7 @@ export function ShareLedgerModal({ open, onClose, party, existing }) {
   return (
     <Modal open={open} title="Share Ledger" onClose={onClose}>
       <p className="small muted" style={{ marginTop: 0 }}>
-        Creates a read-only, password-protected link showing only {party.name}'s bills and balances. No edit, print, download or share controls appear on that page.
+        Creates a read-only, password-protected link showing only {party.name}'s {warehouse ? 'goods received and sent, payments and balance' : 'bills and balances'}. No edit, print, download or share controls appear on that page.
       </p>
       {CONFIG.backend !== 'sheets' && (
         <div className="note" style={{ marginBottom: 12 }}>

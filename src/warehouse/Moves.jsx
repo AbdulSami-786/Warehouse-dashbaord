@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
-  ArrowDownToLine, ArrowLeft, ArrowUpFromLine, Ban, CircleCheck, ClipboardList, Download, Plus, Printer,
+  ArrowDownToLine, ArrowLeft, ArrowUpFromLine, Ban, CircleCheck, ClipboardList, Download, Plus, Printer, Save, Tag,
 } from 'lucide-react';
 import { useApp } from '../lib/AppContext.jsx';
 import { api } from '../lib/api.js';
@@ -167,13 +167,70 @@ const DOC_TITLE = {
   'to-shop': 'Dispatch to Shop', 'from-shop': 'Receipt from Shop', 'adjust-in': 'Stock Adjustment', 'adjust-out': 'Stock Adjustment',
 };
 
+/** Fill in or correct the rates on a saved document — the party's khata follows. */
+function SetRatesModal({ open, onClose, move, lines }) {
+  const { mutate } = useApp();
+  const [rates, setRates] = useState({});
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (open) setRates(Object.fromEntries(lines.map((l) => [l.id, l.rawRate === '' || l.rawRate == null ? '' : String(l.rawRate)])));
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  const isBlank = (v) => v === '' || v == null;
+  const total = r2(lines.reduce((t, l) => t + (isBlank(rates[l.id]) ? 0 : (Number(l.qty) || 0) * (Number(rates[l.id]) || 0)), 0));
+  const bad = lines.some((l) => !isBlank(rates[l.id]) && !(Number(rates[l.id]) >= 0));
+  const save = async () => {
+    if (busy || bad) return;
+    setBusy(true);
+    try {
+      await mutate(() => api.setWhMoveRates(move.id, lines.map((l) => ({ id: l.id, rate: isBlank(rates[l.id]) ? '' : Number(rates[l.id]) }))), `Rates saved on ${move.docNo}`);
+      onClose();
+    } catch { /* toasted */ } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal
+      open={open}
+      wide
+      title={`Rates — ${move.docNo}`}
+      onClose={onClose}
+      footer={<><Button onClick={onClose}>Cancel</Button><Button variant="primary" icon={Save} onClick={save} loading={busy} disabled={bad}>Save rates</Button></>}
+    >
+      <p className="small muted" style={{ marginTop: 0 }}>
+        Each rate is per base unit, the unit the quantity is stored in.{move.partyName ? ` The total goes on ${move.partyName}'s khata.` : ''} Leave a rate empty if it is not known yet.
+      </p>
+      <div className="table-wrap">
+        <table className="tbl">
+          <thead><tr><th>Item</th><th className="r">Qty</th><th className="r" style={{ width: 140 }}>Rate</th><th className="r">Amount</th></tr></thead>
+          <tbody>
+            {lines.map((l) => {
+              const v = rates[l.id] ?? '';
+              return (
+                <tr key={l.id}>
+                  <td style={{ fontWeight: 500 }}>{l.item?.name || 'Item'}</td>
+                  <td className="r num">{qty(l.qty)} {l.unit}</td>
+                  <td className="r"><Input type="number" min="0" step="any" value={v} placeholder="Not set" onChange={(e) => setRates((x) => ({ ...x, [l.id]: e.target.value }))} style={{ textAlign: 'right' }} /></td>
+                  <td className="r strong">{v === '' ? <span className="muted">—</span> : <Money value={r2((Number(l.qty) || 0) * (Number(v) || 0))} />}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+          <tfoot><tr><td colSpan={3}>Total at these rates</td><td className="r">{money(total)}</td></tr></tfoot>
+        </table>
+      </div>
+    </Modal>
+  );
+}
+
 export function MoveView() {
   const { id } = useParams();
   const [search, setSearch] = useSearchParams();
   const navigate = useNavigate();
   const { data, settings, mutate, access } = useApp();
   const sc = access.seesCost;
+  const canMove = access.can('whMoves');
   const [voiding, setVoiding] = useState(false);
+  const [rating, setRating] = useState(false);
   const [reason, setReason] = useState('');
   const move = (data.whMoves || []).find((m) => m.id === id);
   const justSaved = search.get('saved') === '1';
@@ -189,8 +246,9 @@ export function MoveView() {
   const whName = (wid) => wh(wid)?.name || 'Warehouse';
   const lines = (data.whMoveLines || []).filter((l) => l.moveId === move.id).map((l) => {
     const it = data.items.find((i) => i.id === l.itemId);
-    const rate = l.rate === '' || l.rate == null ? Number(it?.costPrice) || 0 : Number(l.rate) || 0;
-    return { ...l, item: it, rate, value: r2((Number(l.qty) || 0) * rate) };
+    const rateSet = !(l.rate === '' || l.rate == null);
+    const rate = rateSet ? Number(l.rate) || 0 : Number(it?.costPrice) || 0;
+    return { ...l, item: it, rawRate: l.rate, rateSet, rate, value: r2((Number(l.qty) || 0) * rate) };
   });
   const units = r2(lines.reduce((s, l) => s + (Number(l.qty) || 0), 0));
   const value = r2(lines.reduce((s, l) => s + l.value, 0));
@@ -198,6 +256,8 @@ export function MoveView() {
   const cancelled = move.status === 'voided';
   const docTitle = DOC_TITLE[move.type] || 'Stock Movement';
   const route = routeText(move, whName);
+  const whParty = move.partyId ? (data.whParties || []).find((p) => p.id === move.partyId) : null;
+  const unrated = lines.filter((l) => !l.rateSet).length;
 
   const print = () => {
     const src = wh(move.warehouseId);
@@ -226,15 +286,23 @@ export function MoveView() {
   return (
     <>
       <PageHead title={`${move.docNo}`} subtitle={`${meta.label} · ${fmtDate(move.date)} · ${route}`}>
-        <Button icon={ArrowLeft} onClick={() => navigate('/warehouse/moves')}>Movements</Button>
+        {canMove ? <Button icon={ArrowLeft} onClick={() => navigate('/warehouse/moves')}>Movements</Button>
+          : whParty && <Button icon={ArrowLeft} onClick={() => navigate(`/warehouse/party/${whParty.id}`)}>{whParty.name}</Button>}
         <Button icon={Printer} variant={justSaved ? 'primary' : ''} onClick={print}>Print {move.type === 'out' ? 'Gate Pass' : move.type === 'in' ? 'GRN' : 'Document'}</Button>
-        {!cancelled && <Button icon={Ban} onClick={() => setVoiding(true)}>Cancel</Button>}
+        {sc && !cancelled && <Button icon={Tag} onClick={() => setRating(true)}>Set rates</Button>}
+        {canMove && !cancelled && <Button icon={Ban} onClick={() => setVoiding(true)}>Cancel</Button>}
       </PageHead>
       {justSaved && (
         <div style={{ padding: '12px 14px', background: 'var(--success-bg)', border: '1px solid #BBF7D0', borderRadius: 'var(--r)', marginBottom: 16, display: 'flex', gap: 9, alignItems: 'center', color: '#15803D' }}>
           <CircleCheck size={17} />
           <div style={{ flex: 1 }}><strong>Saved.</strong> Stock has been updated. Print the document for the driver or for your records.</div>
-          <Button size="sm" onClick={() => navigate(`/warehouse/new/${move.type === 'from-shop' ? 'to-shop' : move.type.startsWith('adjust') ? 'adjust' : move.type}`)}>Record another</Button>
+          {canMove && <Button size="sm" onClick={() => navigate(`/warehouse/new/${move.type === 'from-shop' ? 'to-shop' : move.type.startsWith('adjust') ? 'adjust' : move.type}${whParty ? `?party=${whParty.id}` : ''}`)}>Record another</Button>}
+        </div>
+      )}
+      {sc && !cancelled && whParty && unrated > 0 && (
+        <div style={{ padding: '10px 12px', background: 'var(--warning-bg)', border: '1px solid #FDE68A', borderRadius: 'var(--r-sm)', marginBottom: 16, fontSize: 13, color: '#B45309', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span style={{ flex: 1, minWidth: 200 }}>{unrated} line{unrated === 1 ? ' has' : 's have'} no rate, so {unrated === 1 ? 'it adds' : 'they add'} nothing to {whParty.name}'s khata yet. The values below use the cost price for now.</span>
+          <Button size="sm" icon={Tag} onClick={() => setRating(true)}>Set rates</Button>
         </div>
       )}
       {cancelled && (
@@ -259,7 +327,7 @@ export function MoveView() {
                       <td style={{ fontWeight: 500 }}>{l.item?.name || 'Item'}</td>
                       <td className="r num">{qty(l.qty)}</td>
                       <td>{l.unit}{l.note && <span className="small muted"> ({l.note})</span>}</td>
-                      <td className="r cost-only"><Money value={l.rate} /></td>
+                      <td className="r cost-only">{l.rateSet ? <Money value={l.rate} /> : <span className="muted small" title="No rate on the document — cost price shown">cost {money(l.rate)}</span>}</td>
                       <td className="r strong cost-only"><Money value={l.value} /></td>
                     </tr>
                   ))}
@@ -277,7 +345,16 @@ export function MoveView() {
                 <tr><td className="muted">Type</td><td className="r"><Pill status={cancelled ? 'voided' : meta.tone} label={cancelled ? 'Cancelled' : meta.label} /></td></tr>
                 <tr><td className="muted">{move.type === 'transfer' ? 'From' : 'Warehouse'}</td><td className="r strong">{whName(move.warehouseId)}</td></tr>
                 {move.type === 'transfer' && <tr><td className="muted">To</td><td className="r strong">{whName(move.toWarehouseId)}</td></tr>}
-                {move.partyName && <tr><td className="muted">{move.type === 'in' ? 'Received from' : 'Sent to'}</td><td className="r">{move.partyName}</td></tr>}
+                {(whParty || move.partyName) && (
+                  <tr>
+                    <td className="muted">{move.type === 'in' ? 'Received from' : 'Sent to'}</td>
+                    <td className="r">
+                      {whParty && access.can('whParties')
+                        ? <button type="button" onClick={() => navigate(`/warehouse/party/${whParty.id}`)} style={{ background: 'none', border: 0, padding: 0, color: 'var(--accent)', fontWeight: 600, cursor: 'pointer' }}>{whParty.name}</button>
+                        : whParty?.name || move.partyName}
+                    </td>
+                  </tr>
+                )}
                 {move.reason && <tr><td className="muted">Reason</td><td className="r">{move.reason}</td></tr>}
                 {move.reference && <tr><td className="muted">Reference</td><td className="r">{move.reference}</td></tr>}
                 {move.vehicleNo && <tr><td className="muted">Vehicle</td><td className="r">{move.vehicleNo}</td></tr>}
@@ -288,6 +365,7 @@ export function MoveView() {
           </Card>
         </div>
       </div>
+      {sc && <SetRatesModal open={rating} onClose={() => setRating(false)} move={move} lines={lines} />}
       <Modal
         open={voiding}
         title={`Cancel ${move.docNo}?`}

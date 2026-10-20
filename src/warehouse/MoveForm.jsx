@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   ArrowDownToLine, ArrowLeftRight, ArrowUpFromLine, Info, PackagePlus, Plus, Save, SlidersHorizontal, Store, Trash2,
-  TriangleAlert, Warehouse,
+  TriangleAlert, Users, Warehouse,
 } from 'lucide-react';
 import { useApp } from '../lib/AppContext.jsx';
 import { api } from '../lib/api.js';
@@ -14,6 +14,7 @@ import {
 } from '../components/ui.jsx';
 import { ItemForm } from '../components/forms.jsx';
 import { useSelectedWarehouse } from './WarehouseLayout.jsx';
+import { WhPartyForm } from './WhParties.jsx';
 
 const KINDS = {
   in: { title: 'Stock In', sub: 'Goods received into a warehouse — from a supplier, factory or anywhere else', icon: ArrowDownToLine },
@@ -28,7 +29,11 @@ const newLine = () => ({ key: uid('wl'), itemId: '', qty: '', unit: '', rate: ''
 export default function MoveForm() {
   const { kind = 'in' } = useParams();
   const navigate = useNavigate();
-  const { data, activeWarehouses, activeItems, activeParties, mutate, toast } = useApp();
+  const [search] = useSearchParams();
+  const {
+    data, activeWarehouses, activeItems, activeWhParties, mutate, toast, access,
+  } = useApp();
+  const sc = access.seesCost;
   const selected = useSelectedWarehouse();
   const meta = KINDS[kind] || KINDS.in;
   const [direction, setDirection] = useState(kind === 'adjust' ? 'adjust-out' : 'to-shop');
@@ -36,7 +41,8 @@ export default function MoveForm() {
   const [warehouseId, setWarehouseId] = useState(selected || activeWarehouses[0]?.id || '');
   const [toWarehouseId, setToWarehouseId] = useState('');
   const [date, setDate] = useState(today());
-  const [partyName, setPartyName] = useState('');
+  const [partyId, setPartyId] = useState('');
+  const [addingParty, setAddingParty] = useState(null);
   const [reference, setReference] = useState('');
   const [vehicleNo, setVehicleNo] = useState('');
   const [driverName, setDriverName] = useState('');
@@ -52,11 +58,13 @@ export default function MoveForm() {
   // A fresh form whenever the kind of movement changes.
   useEffect(() => {
     setLines([newLine()]);
-    setPartyName('');
+    // Opened from a party's khata: that party is already chosen.
+    const given = search.get('party');
+    setPartyId((kind === 'in' || kind === 'out') && given && activeWhParties.some((p) => p.id === given) ? given : '');
     setReference('');
     setNote('');
     setDirection(kind === 'adjust' ? 'adjust-out' : 'to-shop');
-  }, [kind]);
+  }, [kind]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!warehouseId && activeWarehouses[0]) setWarehouseId(selected || activeWarehouses[0].id);
   }, [activeWarehouses, warehouseId, selected]);
@@ -71,12 +79,9 @@ export default function MoveForm() {
   const have = (itemId) => stockMap.get(warehouseId)?.get(itemId) || 0;
   const outgoing = (MOVE_TYPES[type]?.sign || 0) < 0;
   const fromShop = type === 'from-shop';
-  const names = useMemo(() => {
-    const s = new Set();
-    if (kind === 'in') (data.suppliers || []).forEach((x) => x.status !== 'archived' && s.add(x.name));
-    activeParties.forEach((p) => s.add(p.name));
-    return [...s].sort();
-  }, [data.suppliers, activeParties, kind]);
+  const withParty = kind === 'in' || kind === 'out';
+  const party = withParty && partyId ? activeWhParties.find((p) => p.id === partyId) || null : null;
+  const partyList = useMemo(() => [...activeWhParties].sort((a, b) => a.name.localeCompare(b.name)), [activeWhParties]);
 
   const updLine = (key, patch) => setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)));
   const pick = (key, itemId, given = null) => {
@@ -118,6 +123,9 @@ export default function MoveForm() {
   const shopShort = fromShop ? [...wanted.entries()].filter(([itemId, q]) => q > itemStock(itemId, data) + 0.0001) : [];
   const value = r2(ready.reduce((s, l) => s + baseQty(l) * (Number(l.rate) || Number(data.items.find((i) => i.id === l.itemId)?.costPrice) || 0), 0));
   const units = r2(ready.reduce((s, l) => s + baseQty(l), 0));
+  // What goes on the party's khata: lines at the rates typed, never a fallback cost.
+  const khataValue = r2(ready.reduce((s, l) => s + (l.rate === '' ? 0 : baseQty(l) * (Number(l.rate) || 0)), 0));
+  const unrated = ready.filter((l) => l.rate === '').length;
   const needsDest = type === 'transfer';
   const ok = warehouseId && ready.length > 0 && !short.length && (!needsDest || (toWarehouseId && toWarehouseId !== warehouseId));
 
@@ -126,7 +134,7 @@ export default function MoveForm() {
     setBusy(true);
     try {
       const move = await mutate(() => api.saveWhMove({
-        type, warehouseId, toWarehouseId: needsDest ? toWarehouseId : '', date, partyName, reference, vehicleNo, driverName,
+        type, warehouseId, toWarehouseId: needsDest ? toWarehouseId : '', date, partyId: party ? party.id : '', partyName: party ? party.name : '', reference, vehicleNo, driverName,
         reason: kind === 'adjust' ? reason : '', note,
         lines: ready.map((l) => {
           const it = data.items.find((i) => i.id === l.itemId);
@@ -198,10 +206,21 @@ export default function MoveForm() {
                 </Field>
               ) : <Field label="Date"><Input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>}
               {needsDest && <Field label="Date"><Input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>}
-              {(kind === 'in' || kind === 'out') && (
-                <Field label={kind === 'in' ? 'Received from' : 'Sent to'} hint={kind === 'in' ? 'Supplier, factory or person' : 'Customer, party or person'}>
-                  <Input value={partyName} onChange={(e) => setPartyName(e.target.value)} list="wh-names" placeholder={kind === 'in' ? 'e.g. City Wholesale Supply' : 'e.g. Ahmed Traders'} />
-                  <datalist id="wh-names">{names.map((n) => <option key={n} value={n} />)}</datalist>
+              {withParty && (
+                <Field
+                  label={kind === 'in' ? 'Received from' : 'Sent to'}
+                  hint={party ? [party.phone, party.city].filter(Boolean).join(' · ') || 'Goes on this party’s khata' : 'Pick a party, or add a new one — the goods go on their khata'}
+                >
+                  <Typeahead
+                    items={partyList}
+                    value={partyId}
+                    onChange={(v) => setPartyId(v || '')}
+                    getLabel={(x) => x.name}
+                    getSub={(x) => [x.city, x.phone].filter(Boolean).join(' · ')}
+                    placeholder={kind === 'in' ? 'Search supplier / factory…' : 'Search customer / party…'}
+                    onAddNew={(n) => setAddingParty(n || '')}
+                    addNewLabel="Add new party"
+                  />
                 </Field>
               )}
               {kind === 'adjust' && (
@@ -259,7 +278,7 @@ export default function MoveForm() {
                           <Select value={l.unit} onChange={(e) => updLine(l.key, { unit: e.target.value })} options={units_.length ? units_ : ['—']} disabled={!it} />
                         </div>
                         <div style={{ width: 118 }} className="cost-only">
-                          <label className="small muted">Rate (optional)</label>
+                          <label className="small muted">{kind === 'in' ? 'Buying rate' : kind === 'out' ? 'Selling rate' : 'Rate (optional)'}</label>
                           <Input type="number" min="0" step="any" value={l.rate} placeholder={it ? String(it.costPrice || 0) : '0'} onChange={(e) => updLine(l.key, { rate: e.target.value })} />
                         </div>
                         <div className="spacer hide-mobile" />
@@ -301,6 +320,22 @@ export default function MoveForm() {
               <span style={{ fontWeight: 700 }}>Value (at rate / cost)</span><span className="spacer" />
               <span className="money" style={{ fontSize: 18 }}>{money(value)}</span>
             </div>
+            {party && (
+              <div className="mt-2" style={{ padding: '10px 12px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)', fontSize: 13 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}>
+                  <Users size={14} /> {party.name}
+                </div>
+                {sc ? (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'center', marginTop: 6 }}>
+                      <span className="muted">{kind === 'in' ? 'Adds to what you owe them' : 'Adds to what they owe you'}</span><span className="spacer" />
+                      <span className="money">{money(khataValue)}</span>
+                    </div>
+                    {unrated > 0 && <div className="small" style={{ color: '#B45309', marginTop: 4 }}>{unrated} line{unrated === 1 ? '' : 's'} without a rate add{unrated === 1 ? 's' : ''} nothing yet — fill the rate in now, or later from the document.</div>}
+                  </>
+                ) : <div className="small muted" style={{ marginTop: 4 }}>The goods go on this party's khata. An admin adds the rates.</div>}
+              </div>
+            )}
             {short.length > 0 && (
               <div className="mt-2" style={{ padding: '10px 12px', background: 'var(--danger-bg)', border: '1px solid #FECACA', borderRadius: 'var(--r-sm)', fontSize: 13, color: '#B91C1C', display: 'flex', gap: 8 }}>
                 <TriangleAlert size={15} style={{ flex: 'none', marginTop: 1 }} />
@@ -329,6 +364,18 @@ export default function MoveForm() {
         </div>
       </div>
 
+      <Modal open={addingParty !== null} title="Add Warehouse Party" onClose={() => setAddingParty(null)}>
+        {addingParty !== null && (
+          <WhPartyForm
+            initialName={addingParty}
+            onSaved={(p) => {
+              setAddingParty(null);
+              if (p?.id) setPartyId(p.id);
+            }}
+            onCancel={() => setAddingParty(null)}
+          />
+        )}
+      </Modal>
       <Modal open={!!addingItem} title="Add New Item" onClose={() => setAddingItem(null)}>
         <ItemForm
           initialName={newName}

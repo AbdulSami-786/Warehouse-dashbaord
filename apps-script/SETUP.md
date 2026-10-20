@@ -192,8 +192,8 @@ redeploy as described below.
 After signing in, the dashboard asks which system to work in: **Wholesale Shop**
 or **Warehouse**. Both use the same login, the same items and the same Sheet.
 
-The warehouse side adds four tabs, created automatically the first time they are
-used (or by running `setup` again):
+The warehouse side adds these tabs, created automatically the first time they
+are used (or by running `setup` again):
 
 | Tab | What it holds |
 |---|---|
@@ -201,6 +201,30 @@ used (or by running `setup` again):
 | `WarehouseMoves` | One row per document — Stock In (GRN), Stock Out (gate pass), Transfer, Sent to Shop, From Shop, Adjustment |
 | `WarehouseMoveLines` | The items and quantities on each document (always in the item's base unit) |
 | `WarehouseExpenses` | Rent, labour, loading and other running costs per warehouse |
+| `WhParties` | Warehouse parties — the factories, suppliers and customers goods come from and go to |
+| `WhPartyPayments` | Money paid to a warehouse party, or received from one |
+
+### Warehouse parties and their khata
+
+**Parties & Khata** in the warehouse menu lists everyone goods come from and go
+to. On **Stock In** ("Received from") and **Stock Out** ("Sent to"), pick a party
+or choose **Add new party** right there.
+
+Each party has a khata: goods received from them and sent to them at the rates
+on the document, plus money paid either way, with one running balance. Above
+zero they owe you; below zero you owe them. From the party's page you can:
+
+- record a **Payment** (we paid them, or they paid us) from Cash / bank, which
+  shows on the shop's Accounts and Balance Sheet;
+- **Share** a password-protected, read-only link to their own khata;
+- send the khata on **WhatsApp**, **Print** it, or export it to **Excel**;
+- **Set Password** so the khata asks for it before opening.
+
+A line saved without a rate adds nothing to the khata until an admin uses **Set
+rates** on the document. Staff see the goods only: never rates, payments or
+balances, and the server refuses money entries from them. Movements typed
+before a party existed are linked to it automatically when a party of the
+same name is added.
 
 Stock is never typed in — each warehouse's stock is worked out from its
 movements, so it can always be traced document by document. A movement that
@@ -262,7 +286,8 @@ sidebar to add the people who work with you.
 ## Importing files (super admin)
 
 Parties, Items, Suppliers, Employees, Expenses, Assets, All Bills, Purchases,
-Warehouses, All Movements and Warehouse Expenses each have an **Import** button.
+Warehouses, Warehouse Parties, All Movements and Warehouse Expenses each have an
+**Import** button.
 
 1. Click **Template** to get a CSV with the right headings, or use your own
    CSV / Excel (`.xlsx`) file — the first row must be the headings.

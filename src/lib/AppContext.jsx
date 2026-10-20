@@ -19,7 +19,7 @@ const EMPTY = {
   cheques: [], partyAdvances: [], purchases: [], employees: [], employeeTx: [], expenses: [],
   stockLoss: [], assets: [], activityLog: [], partyLedgerLinks: [], suppliers: [], purchaseBills: [],
   supplierPayments: [], supplierReturns: [],
-  warehouses: [], whMoves: [], whMoveLines: [], whExpenses: [],
+  warehouses: [], whMoves: [], whMoveLines: [], whExpenses: [], whParties: [], whPartyPayments: [],
   settings: {
     shopName: 'SGA Balloon Merchant', phone: '', address: '', email: '', logoUrl: '',
     roundingRule: 'nearest1', priceAlertThreshold: 15, defaultCreditDays: 7, customMethods: [],
@@ -182,6 +182,7 @@ export function AppProvider({ children }) {
   const activeItems = useMemo(() => data.items.filter((i) => i.status !== 'archived'), [data.items]);
   const activeSuppliers = useMemo(() => (data.suppliers || []).filter((s) => s.status !== 'archived'), [data.suppliers]);
   const activeWarehouses = useMemo(() => (data.warehouses || []).filter((w) => w.status !== 'archived'), [data.warehouses]);
+  const activeWhParties = useMemo(() => (data.whParties || []).filter((p) => p.status !== 'archived'), [data.whParties]);
   // Who is signed in and what they may open: the server's latest word (sent
   // with the data), else what sign-in said.
   const me = data.me || session;
@@ -192,10 +193,10 @@ export function AppProvider({ children }) {
 
   const value = useMemo(() => ({
     session, login, logout, adoptSession, data, setData, refresh, mutate, loading, booted, toast, toasts, me, access,
-    methods, activeParties, activeItems, activeSuppliers, activeWarehouses,
+    methods, activeParties, activeItems, activeSuppliers, activeWarehouses, activeWhParties,
     settings: data.settings, system, setSystem, activeWarehouse, setActiveWarehouse,
   }), [session, login, logout, adoptSession, data, refresh, mutate, loading, booted, toast, toasts, me, access,
-    methods, activeParties, activeItems, activeSuppliers, activeWarehouses, system, setSystem,
+    methods, activeParties, activeItems, activeSuppliers, activeWarehouses, activeWhParties, system, setSystem,
     activeWarehouse, setActiveWarehouse]);
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

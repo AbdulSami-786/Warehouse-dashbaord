@@ -79,6 +79,16 @@ export const api = {
   saveWhExpense: (p) => call('saveWhExpense', p),
   deleteWhExpense: (id, reason) => call('deleteWhExpense', { id, reason }),
   saveStockCount: (p) => call('saveStockCount', p),
+  setWhMoveRates: (id, rates) => call('setWhMoveRates', { id, rates }),
+
+  // Warehouse parties: who goods come from and go to, each with a khata
+  saveWhParty: (p) => call('saveWhParty', p),
+  archiveWhParty: (id) => call('archiveWhParty', { id }),
+  setWhPartyLock: (partyId, password, currentPassword) => call('setWhPartyLock', { partyId, password, currentPassword }),
+  addWhPartyPayment: (p) => call('addWhPartyPayment', p),
+  deleteWhPartyPayment: (id, reason) => call('deleteWhPartyPayment', { id, reason }),
+  createWhShareLink: (partyId, password) => call('createWhShareLink', { partyId, password }),
+  revokeWhShareLink: (partyId) => call('revokeWhShareLink', { partyId }),
 
   // Users and import — super admin only
   listUsers: () => call('listUsers'),

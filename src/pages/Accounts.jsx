@@ -83,7 +83,7 @@ export default function Accounts() {
 
 const TYPE_LABEL = {
   payment: 'Payment', expense: 'Expense', salary: 'Salary', supplier: 'Supplier', opening: 'Opening', warehouse: 'Warehouse',
-  purchase: 'Purchase',
+  purchase: 'Purchase', whParty: 'Warehouse party',
 };
 
 export function AccountStatement() {
