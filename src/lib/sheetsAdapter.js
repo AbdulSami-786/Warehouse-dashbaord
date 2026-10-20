@@ -22,17 +22,38 @@ const RETRYABLE = new Set([
   'saveWarehouse', 'saveWhMove', 'saveWhExpense',
   'saveStockCount', 'importBatch', 'listUsers',
   'saveWhParty', 'addWhPartyPayment',
+  'syncPush',
 ]);
 
+// Reads and the offline upload can safely give up on a request that hangs on a
+// bad connection: nothing doubles if it did arrive. Other writes wait it out.
+const TIMEOUT_MS = { bootstrap: 90000, fullBackup: 90000, syncPush: 120000 };
+
 async function post(body) {
-  // text/plain keeps this a "simple" request: Apps Script cannot answer the
-  // CORS preflight that application/json would trigger.
-  const res = await fetch(CONFIG.appsScriptUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify(body),
-    redirect: 'follow',
-  });
+  const ms = TIMEOUT_MS[body.action];
+  const ctrl = ms && typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = ctrl ? setTimeout(() => ctrl.abort(), ms) : null;
+  let res;
+  try {
+    // text/plain keeps this a "simple" request: Apps Script cannot answer the
+    // CORS preflight that application/json would trigger.
+    res = await fetch(CONFIG.appsScriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(body),
+      redirect: 'follow',
+      signal: ctrl?.signal,
+    });
+  } catch (err) {
+    // A timed-out request reads as a lost connection, but is not tried again:
+    // a second wait as long would leave the screen hanging.
+    if (err?.name !== 'AbortError') throw err;
+    const t = new TypeError('Request timed out');
+    t.timedOut = true;
+    throw t;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
   if (!res.ok) throw new Error(`The server answered ${res.status}. Please try again.`);
   try {
     return await res.json();
@@ -78,10 +99,10 @@ function textFields(db) {
   return db;
 }
 
-export async function sheetsCall(action, payload = {}) {
+export async function sheetsCall(action, payload = {}, { requestId: rid } = {}) {
   if (!CONFIG.appsScriptUrl) throw new Error('No Apps Script URL is set in src/lib/config.js.');
 
-  const body = { action, payload, token: getSession()?.token || '', requestId: requestId() };
+  const body = { action, payload, token: getSession()?.token || '', requestId: rid || requestId() };
 
   let out;
   try {
@@ -89,7 +110,7 @@ export async function sheetsCall(action, payload = {}) {
   } catch (err) {
     // Only a lost connection is worth a second try, and only for calls that
     // cannot double up.
-    if (!(err instanceof TypeError) || !RETRYABLE.has(action)) throw offline(err);
+    if (!(err instanceof TypeError) || err.timedOut || !RETRYABLE.has(action)) throw offline(err);
     try {
       out = await post(body);
     } catch (err2) {
@@ -108,8 +129,10 @@ export async function sheetsCall(action, payload = {}) {
   return action === 'bootstrap' || action === 'fullBackup' ? textFields(out.data) : out.data;
 }
 
+/** A lost connection, marked so the desktop app can fall back to its offline copy. */
 function offline(err) {
-  return err instanceof TypeError
-    ? new Error('Could not reach the server. Check the internet connection and try again.')
-    : err;
+  if (!(err instanceof TypeError)) return err;
+  const out = new Error('Could not reach the server. Check the internet connection and try again.');
+  out.offline = true;
+  return out;
 }

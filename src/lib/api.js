@@ -4,8 +4,11 @@
 import { CONFIG } from './config.js';
 import { localCall } from './localAdapter.js';
 import { sheetsCall } from './sheetsAdapter.js';
+import { hybridCall, isDesktop } from './hybridAdapter.js';
 
-const call = CONFIG.backend === 'sheets' ? sheetsCall : localCall;
+// The desktop app keeps working without internet (hybridAdapter.js); the web
+// dashboard always talks to the Sheet directly.
+const call = CONFIG.backend === 'sheets' ? (isDesktop ? hybridCall : sheetsCall) : localCall;
 
 export const api = {
   login: (username, password) => call('login', { username, password }),

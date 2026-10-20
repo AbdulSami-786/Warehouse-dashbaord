@@ -15,6 +15,7 @@ import {
 import { ItemForm } from '../components/forms.jsx';
 import { useSelectedWarehouse } from './WarehouseLayout.jsx';
 import { WhPartyForm } from './WhParties.jsx';
+import ImportButton from '../components/ImportButton.jsx';
 
 const KINDS = {
   in: { title: 'Stock In', sub: 'Goods received into a warehouse — from a supplier, factory or anywhere else', icon: ArrowDownToLine },
@@ -172,6 +173,7 @@ export default function MoveForm() {
     <>
       <PageHead title={meta.title} subtitle={meta.sub}>
         <Button onClick={() => navigate(-1)}>Cancel</Button>
+        <ImportButton kind="whMoves" defaultType={kind === 'adjust' ? 'adjust-out' : kind} />
         <Button variant="primary" icon={Save} onClick={save} loading={busy} disabled={!ok}>Save {MOVE_TYPES[type]?.short}</Button>
       </PageHead>
 

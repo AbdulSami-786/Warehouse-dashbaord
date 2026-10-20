@@ -595,6 +595,12 @@ export const SPECS = {
     needs: ['items'],
     plan(recs, data, ctx) {
       const done = new Set((data.whMoves || []).filter((m) => m.reference && m.status !== 'voided').map((m) => `${m.type}|${m.warehouseId}|${m.date}|${key(m.reference)}`));
+      // Documents without a reference are recognised by what they hold, so importing the same file twice never doubles stock.
+      const sigOf = (type, whId, toId, date, party, lines) => `${type}|${whId}|${toId || ''}|${date}|${nameKey(party)}|${lines.map((l) => `${l.itemId}:${r2(l.qty)}`).sort().join(',')}`;
+      const linesOf = new Map();
+      (data.whMoveLines || []).forEach((l) => { if (!linesOf.has(l.moveId)) linesOf.set(l.moveId, []); linesOf.get(l.moveId).push(l); });
+      const have = new Set((data.whMoves || []).filter((m) => !m.reference && m.status !== 'voided')
+        .map((m) => sigOf(m.type, m.warehouseId, m.toWarehouseId, m.date, m.partyName, linesOf.get(m.id) || [])));
       const groups = new Map();
       recs.forEach((r) => {
         const k = `${key(r.type)}|${nameKey(r.warehouse)}|${nameKey(r.toWarehouse)}|${r.date || today()}|${r.reference ? key(r.reference) : key(r.party)}`;
@@ -625,6 +631,11 @@ export const SPECS = {
         }
         if (missing.length) return { rows: rowNos, ref, error: `Item${missing.length === 1 ? '' : 's'} not found: ${[...new Set(missing)].join(', ')}`, need: { items: missing } };
         // Stock in / out name who the goods came from or went to: that warehouse party's khata.
+        if (!head.reference) {
+          const sig = sigOf(type, wh.id, dest ? dest.id : '', date, head.party || '', lines);
+          if (have.has(sig)) return { rows: rowNos, ref, skip: `The same ${type} for ${wh.name} on ${date} is already recorded` };
+          have.add(sig);
+        }
         const withParty = (type === 'in' || type === 'out') && head.party;
         const wp = withParty ? ctx.whParty(head.party) : null;
         return {

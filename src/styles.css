@@ -2763,3 +2763,19 @@ body.no-cost .cost-only { display: none !important; }
   .imp-map-row { grid-template-columns: 1fr; }
   .imp-summary { grid-template-columns: 1fr; }
 }
+
+/* Desktop app: connection / offline-changes badge in the top bar */
+.sync-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  font: inherit; font-size: 12px; font-weight: 600; line-height: 1;
+  padding: 5px 10px; border-radius: 999px; border: 1px solid; cursor: pointer; white-space: nowrap;
+}
+.sync-ok { background: var(--success-bg); color: #15803D; border-color: #BBF7D0; }
+.sync-busy { background: var(--surface); color: var(--text-muted); border-color: var(--border); }
+.sync-off { background: var(--warning-bg); color: #B45309; border-color: #FDE68A; }
+.sync-bad { background: var(--danger-bg); color: #B91C1C; border-color: #FECACA; }
+.mobile-topbar .sync-badge { margin-left: auto; padding: 5px 8px; }
+.sync-details p { margin: 0 0 10px; }
+.sync-error { background: var(--danger-bg); border-color: #FECACA; color: #B91C1C; margin-bottom: 10px; }
+.sync-problems { margin: 0; padding-left: 18px; max-height: 220px; overflow: auto; }
+.sync-problems li { margin-bottom: 8px; }

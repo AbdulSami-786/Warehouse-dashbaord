@@ -3,11 +3,46 @@
 // Development: loads the Vite dev server (npm run electron:dev).
 // Production:  loads dist/index.html from inside the packaged app.
 
-import { app, BrowserWindow, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// The offline copy of the Sheet and the changes waiting to upload, one file per
+// key under the user's app-data folder (electron/preload.cjs).
+function storeFile(key) {
+  const safe = String(key).replace(/[^A-Za-z0-9._-]/g, '_');
+  return path.join(app.getPath('userData'), 'offline-data', `${safe}.json`);
+}
+
+ipcMain.on('store:get', (event, key) => {
+  try {
+    event.returnValue = fs.readFileSync(storeFile(key), 'utf8');
+  } catch {
+    event.returnValue = null;
+  }
+});
+
+ipcMain.on('store:set', (event, key, value) => {
+  try {
+    const file = storeFile(key);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    // Write beside it, then swap in: a crash mid-write leaves the old copy whole.
+    const tmp = `${file}.tmp`;
+    fs.writeFileSync(tmp, value, 'utf8');
+    fs.renameSync(tmp, file);
+    event.returnValue = true;
+  } catch (err) {
+    event.returnValue = `Could not save to this computer: ${err.message}`;
+  }
+});
+
+ipcMain.on('store:remove', (event, key) => {
+  try { fs.rmSync(storeFile(key), { force: true }); } catch { /* already gone */ }
+  event.returnValue = true;
+});
 // Its own port, so electron:dev never opens another project that happens to be
 // running on Vite's default 5173. Matches the electron:dev script.
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5199';
@@ -28,6 +63,7 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      preload: path.join(__dirname, 'preload.cjs'),
     },
   });
 

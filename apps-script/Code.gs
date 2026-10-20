@@ -3962,6 +3962,53 @@ function warehouseStock(warehouseId) {
   return out;
 }
 
+/** Shop stock of one item. Mirror of itemStock in src/lib/calc.js. */
+function shopStockOf(itemId) {
+  function live(rows, statusById, idKey) {
+    return rows.filter(function (r) { return !statusById[r[idKey]]; });
+  }
+  function sum(rows, f) { return rows.reduce(function (s, x) { return s + (f ? f(x) : (Number(x.qty) || 0)); }, 0); }
+  function voidedIds(sheetName) {
+    var v = {};
+    readAll(sheetName).forEach(function (b) { if (b.status === 'voided') v[b.id] = true; });
+    return v;
+  }
+  function forItem(rows) { return rows.filter(function (r) { return r.itemId === itemId; }); }
+  var item = getById('Items', itemId);
+  var opening = item ? Number(item.openingStock) || 0 : 0;
+  var bought = sum(live(forItem(readAll('Purchases')), voidedIds('PurchaseBills'), 'purchaseBillId'), lineReceivedQty);
+  var sold = sum(live(forItem(readAll('BillItems')), voidedIds('Bills'), 'billId'));
+  var restocked = sum(forItem(readAll('Returns')).filter(function (r) { return r.restock === true || r.restock === 'TRUE' || r.restock === 'true' || r.restock === 1; }));
+  var lost = sum(forItem(readAll('StockLoss')));
+  var sentBack = sum(forItem(readAll('SupplierReturns')));
+  var moves = {};
+  readAll('WarehouseMoves').forEach(function (m) { if (m.status !== 'voided') moves[m.id] = m; });
+  var flow = 0;
+  forItem(readAll('WarehouseMoveLines')).forEach(function (l) {
+    var m = moves[l.moveId];
+    if (!m) return;
+    if (m.type === 'to-shop') flow += Number(l.qty) || 0;
+    if (m.type === 'from-shop') flow -= Number(l.qty) || 0;
+  });
+  return r2(opening + bought - sold + restocked - lost - sentBack + flow);
+}
+
+/** Refuse a movement that would take the shop's stock of an item below zero. */
+function assertShopHas(lines, cancelling) {
+  var want = {};
+  lines.forEach(function (l) { want[l.itemId] = r2((want[l.itemId] || 0) + Number(l.qty)); });
+  for (var itemId in want) {
+    var have = shopStockOf(itemId);
+    if (want[itemId] > have + 0.0001) {
+      var item = getById('Items', itemId);
+      var name = item ? item.name : 'Item';
+      fail(cancelling
+        ? name + ': only ' + have + ' left in the shop, so this movement cannot be cancelled — the goods have already been used.'
+        : name + ': only ' + have + ' ' + (item ? item.baseUnit : '') + ' in the shop, cannot send ' + want[itemId] + '.');
+    }
+  }
+}
+
 /** Refuse a movement that would take a warehouse below zero on any item. */
 function assertWarehouseHas(wh, lines, cancelling) {
   var stock = warehouseStock(wh.id);
@@ -4052,6 +4099,8 @@ function saveWhMove(p) {
     var party = whPartyFor(p);
     // Goods leaving a warehouse must be there to leave.
     if (meta.sign < 0) assertWarehouseHas(wh, lines, false);
+    // Goods sent from the shop into a warehouse must be on the shop's shelves.
+    if (p.type === 'from-shop') assertShopHas(lines, false);
 
     var date = p.date || todayISO();
     var move = {
@@ -4145,6 +4194,8 @@ function voidWhMove(p) {
       ? getById('Warehouses', move.toWarehouseId)
       : (meta.sign > 0 ? getById('Warehouses', move.warehouseId) : null);
     if (receiver) assertWarehouseHas(receiver, lines, true);
+    // Cancelling goods sent to the shop takes them back off the shop's shelves.
+    if (move.type === 'to-shop') assertShopHas(lines, true);
     var patch = { status: 'voided', voidReason: p.reason || '', voidedAt: nowISO() };
     updateRow('WarehouseMoves', move._row, patch);
     logActivity('warehouse', move.id, 'void',

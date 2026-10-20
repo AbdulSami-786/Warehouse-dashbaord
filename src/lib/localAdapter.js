@@ -6,12 +6,27 @@ import { CONFIG, PAYMENT_METHODS } from './config.js';
 import { r2, today, addDays, uid, phoneKey, nameKey, dayOf } from './format.js';
 import {
   billState, billTotals, payableNow, lineDelivered, lineReceived, supplierBalance,
-  MOVE_TYPES, warehouseStockMap,
+  MOVE_TYPES, warehouseStockMap, itemStock,
 } from './calc.js';
 import { accessOf, stripCostData, COST_PAGES, PAGES } from './permissions.js';
 
-const DB_KEY = 'jh_db_v1';
 export const SESSION_KEY = 'jh_session';
+
+// Where the database is kept. Normally this browser's localStorage under
+// 'jh_db_v1'; the desktop app's offline mode (hybridAdapter.js) points it at
+// its own copy of the Sheet, kept in a file.
+let DB_KEY = 'jh_db_v1';
+let dbStore = {
+  get: (k) => localStorage.getItem(k),
+  set: (k, v) => localStorage.setItem(k, v),
+  remove: (k) => localStorage.removeItem(k),
+};
+
+export function setDbStore(key, store) {
+  DB_KEY = key;
+  if (store) dbStore = store;
+  current = null;
+}
 
 export async function sha256(text) {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
@@ -36,7 +51,7 @@ function emptyDb() {
 
 function readDb() {
   try {
-    const raw = localStorage.getItem(DB_KEY);
+    const raw = dbStore.get(DB_KEY);
     if (raw) return { ...emptyDb(), ...JSON.parse(raw) };
   } catch (err) {
     console.error('Local DB read failed, starting fresh', err);
@@ -46,7 +61,7 @@ function readDb() {
 
 function writeDb(db) {
   try {
-    localStorage.setItem(DB_KEY, JSON.stringify(db));
+    dbStore.set(DB_KEY, JSON.stringify(db));
   } catch {
     throw new Error('Could not save to this device’s storage. It may be full, or the browser is in private mode. Free up space or export a backup, then try again.');
   }
@@ -197,7 +212,14 @@ function log(db, entityType, entityId, action, description, oldValue = null, new
 function nextBillNo(db) {
   const y = new Date().getFullYear();
   db.billCounter = db.billCounter || {};
-  db.billCounter[y] = (db.billCounter[y] || 0) + 1;
+  // A copy of the Sheet arrives without the counter: carry on from the
+  // highest number already issued this year.
+  let max = db.billCounter[y] || 0;
+  for (const b of db.bills) {
+    const m = /^(\d{4})-(\d+)$/.exec(String(b.billNo || ''));
+    if (m && Number(m[1]) === y) max = Math.max(max, Number(m[2]));
+  }
+  db.billCounter[y] = max + 1;
   return `${y}-${String(db.billCounter[y]).padStart(4, '0')}`;
 }
 
@@ -300,7 +322,11 @@ function restoreAdvance(db, partyId, amount) {
   }
 }
 
-const settle = (ms = 90) => new Promise((r) => setTimeout(r, ms));
+// A short pause that makes the browser-only mode feel like a real save. The
+// desktop app turns it off: there, saving to this computer should be instant.
+let pause = 90;
+export function setLocalPause(ms) { pause = ms; }
+const settle = () => (pause > 0 ? new Promise((r) => setTimeout(r, pause)) : Promise.resolve());
 
 // Actions run one at a time, like the server's lock: two quick clicks cannot
 // interleave their reads and writes.
@@ -1399,6 +1425,8 @@ async function perform(action, p = {}) {
       }
       // Goods leaving a warehouse must be there to leave.
       if (meta.sign < 0) assertWarehouseHas(db, wh, lines);
+      // Goods sent from the shop into a warehouse must be on the shop's shelves.
+      if (p.type === 'from-shop') assertShopHas(db, lines);
       const date = p.date || today();
       const move = {
         id: uid('whm'), docNo: nextDocNo(db.whMoves, meta.prefix, date), type: p.type,
@@ -1437,6 +1465,8 @@ async function perform(action, p = {}) {
         ? db.warehouses.find((w) => w.id === move.toWarehouseId)
         : meta.sign > 0 ? db.warehouses.find((w) => w.id === move.warehouseId) : null;
       if (receiver) assertWarehouseHas(db, receiver, lines, 'cancel');
+      // Cancelling goods sent to the shop takes them back off the shop's shelves.
+      if (move.type === 'to-shop') assertShopHas(db, lines, 'cancel');
       const before = { ...move };
       move.status = 'voided';
       move.voidReason = p.reason || '';
@@ -1693,12 +1723,27 @@ function assertWarehouseHas(db, wh, lines, verb = 'send') {
   }
 }
 
+/** Refuse a movement that would take the shop's stock of an item below zero. */
+function assertShopHas(db, lines, verb = 'send') {
+  const want = new Map();
+  lines.forEach((l) => want.set(l.itemId, r2((want.get(l.itemId) || 0) + Number(l.qty))));
+  for (const [itemId, q] of want) {
+    const have = itemStock(itemId, db);
+    if (q > have + 0.0001) {
+      const item = db.items.find((i) => i.id === itemId);
+      throw new Error(verb === 'cancel'
+        ? `${item?.name || 'Item'}: only ${have} left in the shop, so this movement cannot be cancelled — the goods have already been used.`
+        : `${item?.name || 'Item'}: only ${have} ${item?.baseUnit || ''} in the shop, cannot send ${q}.`.replace(/\s+,/, ','));
+    }
+  }
+}
+
 function methodsOf(db) {
   return [...PAYMENT_METHODS, ...(db.settings.customMethods || [])];
 }
 
 /** Erase everything stored on this device (Settings → Danger Zone). */
 export function wipeLocal() {
-  localStorage.removeItem(DB_KEY);
+  dbStore.remove(DB_KEY);
   current = null;
 }

@@ -3,6 +3,7 @@ import { api } from './api.js';
 import { PAYMENT_METHODS } from './config.js';
 import { getSession, SESSION_KEY } from './localAdapter.js';
 import { SESSION_ENDED_EVENT } from './sheetsAdapter.js';
+import { clearSyncProblems, DATA_SYNCED_EVENT, isDesktop, onSyncStatus, syncNow as syncDesktop } from './hybridAdapter.js';
 import { relockAll } from './partyLock.js';
 import { accessFor } from './permissions.js';
 
@@ -50,6 +51,9 @@ export function AppProvider({ children }) {
   const [system, setSystemState] = useState(() => readPref(SYSTEM_KEY, ''));
   const [activeWarehouse, setActiveWarehouseState] = useState(() => readPref(WAREHOUSE_KEY, 'all'));
   const toastId = useRef(0);
+  // Desktop app only: online or not, and what is waiting to upload.
+  const [sync, setSync] = useState(null);
+  useEffect(() => (isDesktop ? onSyncStatus(setSync) : undefined), []);
 
   const toast = useCallback((message, type = 'success') => {
     const id = ++toastId.current;
@@ -82,6 +86,17 @@ export function AppProvider({ children }) {
     if (session) refresh().catch(() => {});
     else setBooted(true);
   }, [session, refresh]);
+
+  // The desktop app syncs with the Sheet in the background; show what it brought.
+  useEffect(() => {
+    if (!isDesktop || !session) return undefined;
+    const onSynced = () => refresh({ silent: true }).catch(() => {});
+    window.addEventListener(DATA_SYNCED_EVENT, onSynced);
+    return () => window.removeEventListener(DATA_SYNCED_EVENT, onSynced);
+  }, [session, refresh]);
+
+  /** Sync with the Sheet now, from the connection window. */
+  const syncNow = useCallback(() => syncDesktop(), []);
 
   const logoutRef = useRef(() => {});
 
@@ -195,9 +210,10 @@ export function AppProvider({ children }) {
     session, login, logout, adoptSession, data, setData, refresh, mutate, loading, booted, toast, toasts, me, access,
     methods, activeParties, activeItems, activeSuppliers, activeWarehouses, activeWhParties,
     settings: data.settings, system, setSystem, activeWarehouse, setActiveWarehouse,
+    sync, syncNow, clearSyncProblems,
   }), [session, login, logout, adoptSession, data, refresh, mutate, loading, booted, toast, toasts, me, access,
     methods, activeParties, activeItems, activeSuppliers, activeWarehouses, activeWhParties, system, setSystem,
-    activeWarehouse, setActiveWarehouse]);
+    activeWarehouse, setActiveWarehouse, sync, syncNow]);
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

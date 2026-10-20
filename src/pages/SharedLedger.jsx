@@ -14,6 +14,26 @@ import {
 import { BillPreview } from '../components/forms.jsx';
 import { LOGO } from '../components/Layout.jsx';
 
+const ACUNNITY_LOGO = `${import.meta.env.BASE_URL}mylogo.jpeg`;
+const ACUNNITY_PHONE = '03032385244';
+
+/** Top bar of the shared ledger: Acunnity's logo, slogan and contact number. */
+function AcunnityNav() {
+  return (
+    <div style={{ background: '#fff', borderBottom: '1px solid var(--border, #e5e7eb)', padding: '8px 16px' }}>
+      <div style={{ maxWidth: 860, margin: '0 auto', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <img src={ACUNNITY_LOGO} alt="Acunnity" style={{ height: 40, width: 'auto', borderRadius: 6 }} />
+        <div style={{ flex: 1, minWidth: 180, fontSize: 13, fontWeight: 600, lineHeight: 1.3 }}>
+          Make your dashboard from Acunnity
+        </div>
+        <a href={`tel:${ACUNNITY_PHONE}`} style={{ fontSize: 13, fontWeight: 700, color: 'var(--accent)', textDecoration: 'none' }}>
+          {ACUNNITY_PHONE}
+        </a>
+      </div>
+    </div>
+  );
+}
+
 function Statement({ data }) {
   const [openId, setOpenId] = useState(null);
   const bills = useMemo(() => {
@@ -33,6 +53,7 @@ function Statement({ data }) {
   const itemName = (iid) => (data.billItems || []).filter((l) => l.billId === openId).find((l) => l.itemId === iid)?.itemName || 'Item';
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg)' }}>
+      <AcunnityNav />
       <div style={{ background: 'linear-gradient(160deg, #B91F19, #7A130F)', color: '#fff', padding: '22px 20px 26px', borderBottom: '4px solid var(--brand-yellow)' }}>
         <div style={{ maxWidth: 860, margin: '0 auto', display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
           <img src={LOGO} alt={data.shopName} style={{ height: 52, width: 'auto', background: '#fff', borderRadius: 10, padding: '4px 8px' }} />
@@ -141,6 +162,7 @@ function WarehouseStatement({ data }) {
   const got = (r) => r.debit;
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg)' }}>
+      <AcunnityNav />
       <div style={{ background: 'linear-gradient(160deg, #B91F19, #7A130F)', color: '#fff', padding: '22px 20px 26px', borderBottom: '4px solid var(--brand-yellow)' }}>
         <div style={{ maxWidth: 860, margin: '0 auto', display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
           <img src={LOGO} alt={data.shopName} style={{ height: 52, width: 'auto', background: '#fff', borderRadius: 10, padding: '4px 8px' }} />

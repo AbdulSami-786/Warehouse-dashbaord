@@ -4,11 +4,12 @@ import {
   ArrowLeftRight, BookOpen, Boxes, Building2, CalendarCheck, CircleAlert, ClipboardList, CreditCard, Download,
   Ellipsis, FilePlus2, Landmark, LayoutDashboard, LogOut, Package, Plus, Receipt, RotateCcw, Scale,
   ScrollText, Settings, ShieldCheck, ShoppingCart, TrendingUp, Truck, UserCog, Users, Wallet, ChartColumn,
+  Cloud, CloudOff, RefreshCw, TriangleAlert,
 } from 'lucide-react';
 import { useApp } from '../lib/AppContext.jsx';
 import { billStates, partyDue } from '../lib/calc.js';
 import { exportBackup } from '../lib/exporters.js';
-import { Button, Skeleton, Toasts } from './ui.jsx';
+import { Button, Modal, Skeleton, Toasts } from './ui.jsx';
 import { CloseToday } from './forms.jsx';
 import { ROLES, SHOP_PAGES, WAREHOUSE_PAGES } from '../lib/permissions.js';
 
@@ -81,6 +82,76 @@ const TABS = [
 ];
 
 /** Sidebar + topbar frame shared by the shop and the warehouse systems. */
+const when = (iso) => (iso ? new Date(iso).toLocaleString() : 'not yet');
+
+/** Desktop app: online or offline, and what is waiting to upload. Opens the details. */
+function SyncBadge({ compact = false }) {
+  const { sync, syncNow, clearSyncProblems } = useApp();
+  const [open, setOpen] = useState(false);
+  if (!sync) return null;
+  const trouble = sync.problems.length > 0 || !!sync.lastError;
+  let tone = 'ok';
+  let Icon = Cloud;
+  let label = 'Online';
+  // A background sync only spins the icon: it runs after every save.
+  if (!sync.online) {
+    tone = 'off'; Icon = CloudOff; label = sync.pending ? `Offline · ${sync.pending} waiting` : 'Offline';
+  } else if (trouble) {
+    tone = 'bad'; Icon = TriangleAlert; label = 'Sync problem';
+  } else if (sync.pending) {
+    tone = 'off'; Icon = RefreshCw; label = `${sync.pending} waiting`;
+  }
+  return (
+    <>
+      <button className={`sync-badge sync-${tone}`} onClick={() => setOpen(true)} title="Connection and offline changes">
+        {sync.syncing ? <RefreshCw size={14} className="spin" /> : <Icon size={14} />}
+        {compact ? (sync.pending ? sync.pending : '') : label}
+      </button>
+      <Modal
+        open={open}
+        title="Connection"
+        onClose={() => setOpen(false)}
+        footer={(
+          <>
+            {(trouble || sync.notes.length > 0) && <Button onClick={clearSyncProblems}>Clear list</Button>}
+            <Button variant="primary" icon={RefreshCw} loading={sync.syncing} onClick={syncNow}>Sync now</Button>
+          </>
+        )}
+      >
+        <div className="sync-details">
+          <p>
+            <strong>{sync.online ? 'Connected to the Google Sheet.' : 'No internet connection.'}</strong>{' '}
+            Everything you save is kept on this computer straight away and uploads to the Sheet by itself
+            {sync.online ? ' within a few seconds.' : ' when the internet is back. Keep working as normal.'}
+          </p>
+          <p>Changes waiting to upload: <strong>{sync.pending}</strong></p>
+          <p className="muted small">Last upload: {when(sync.lastSync)}</p>
+          <p className="muted small">Without internet you cannot change users, settings, party passwords or share links, or import files.</p>
+          {sync.lastError && <div className="note sync-error"><TriangleAlert size={15} /> {sync.lastError}</div>}
+          {sync.notes.length > 0 && (
+            <>
+              <p><strong>Renumbered bills</strong></p>
+              <ul className="sync-problems">
+                {sync.notes.map((x, i) => <li key={i}><span className="muted small">{when(x.at)}</span><br />{x.text}</li>)}
+              </ul>
+            </>
+          )}
+          {sync.problems.length > 0 && (
+            <>
+              <p><strong>Not uploaded</strong></p>
+              <ul className="sync-problems">
+                {sync.problems.map((x, i) => (
+                  <li key={i}><span className="muted small">{when(x.at)} · {x.tab} {x.id}</span><br />{x.error}</li>
+                ))}
+              </ul>
+            </>
+          )}
+        </div>
+      </Modal>
+    </>
+  );
+}
+
 export function Frame({
   variant = 'shop', brandSub, nav, badges = {}, title, topbarSub, topActions, mobileTabs, fab,
 }) {
@@ -140,12 +211,14 @@ export function Frame({
             </span>
             {roleLabel && <span className="role-pill" title={`Signed in as ${me?.name || session?.username}`}>{roleLabel}</span>}
           </div>
+          <SyncBadge />
           <div className="spacer" />
           {topActions}
         </header>
         <header className="mobile-topbar">
           <img className="mobile-brand" src={ICON} alt="" />
           <span className="title">{title}</span>
+          <SyncBadge compact />
           {bothSystems && <button className="btn btn-ghost btn-icon" onClick={switchSystem} aria-label="Switch system" title="Switch system"><ArrowLeftRight size={17} /></button>}
         </header>
         <main className="page">

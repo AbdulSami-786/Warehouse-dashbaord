@@ -44,7 +44,7 @@ function IssueList({ title, list, tone }) {
  * Import a page's records from a file the shop already has. Super admin only:
  * the server refuses the import from anyone else.
  */
-export default function ImportButton({ kind, label = 'Import' }) {
+export default function ImportButton({ kind, label = 'Import', defaultType = '' }) {
   const {
     access, data, methods, settings, refresh, toast,
   } = useApp();
@@ -60,7 +60,12 @@ export default function ImportButton({ kind, label = 'Import' }) {
   const [err, setErr] = useState('');
 
   const opts = { methods, roundingRule: settings.roundingRule };
-  const records = useMemo(() => (file ? mapRows(spec, file.rows, mapping) : []), [file, mapping, spec]);
+  // On a Stock In / Out / Transfer page, rows without a Type are that page's kind.
+  const records = useMemo(() => {
+    if (!file) return [];
+    const recs = mapRows(spec, file.rows, mapping);
+    return defaultType ? recs.map((r) => (r.type ? r : { ...r, type: defaultType })) : recs;
+  }, [file, mapping, spec, defaultType]);
   const plan = useMemo(() => (file ? preview(spec, records, data, opts) : null), [file, records, data, spec]); // eslint-disable-line react-hooks/exhaustive-deps
   const needCount = plan ? plan.need.parties.size + plan.need.items.size + plan.need.suppliers.size + plan.need.whParties.size : 0;
   const missingRequired = spec.fields.filter((f) => f.required && !mapping[f.key]);

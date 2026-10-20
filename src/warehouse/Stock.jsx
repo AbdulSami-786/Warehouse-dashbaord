@@ -15,6 +15,7 @@ import {
   Button, Card, DateRange, Empty, Money, PageHead, Pill, SearchBox, Select, Stat,
 } from '../components/ui.jsx';
 import { useSelectedWarehouse, WarehousePicker } from './WarehouseLayout.jsx';
+import ImportButton from '../components/ImportButton.jsx';
 
 export default function Stock() {
   const { data, settings, activeWarehouses, toast, access } = useApp();
@@ -78,6 +79,7 @@ export default function Stock() {
         <WarehousePicker style={{ width: 170 }} />
         <Button icon={Download} onClick={toExcel}>Excel</Button>
         <Button icon={Printer} onClick={toPDF}>PDF</Button>
+        <ImportButton kind="whMoves" defaultType="in" label="Import Stock" />
       </PageHead>
       <div className="stat-grid">
         <Stat className="cost-only" label="Stock Value (at cost)" value={money(totals.value)} icon={Boxes} tone="#16A34A" />

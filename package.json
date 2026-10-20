@@ -1,7 +1,7 @@
 {
   "name": "jh-enterprises-dashboard",
   "private": true,
-  "version": "2.0.0",
+  "version": "2.3.0",
   "description": "SGA Balloon Merchant — Wholesale shop and multi-warehouse dashboard",
   "author": "SGA Balloon Merchant",
   "type": "module",
