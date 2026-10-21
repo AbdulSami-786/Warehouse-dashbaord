@@ -20,6 +20,7 @@ import {
 } from '../components/ui.jsx';
 import { PartyLockModal, ShareLedgerModal, UnlockLedger } from '../components/partyForms.jsx';
 import ImportButton from '../components/ImportButton.jsx';
+import PartyJournal from '../components/PartyJournal.jsx';
 
 /** A khata balance in words, from our side: above zero the party owes us. */
 export function balanceWords(b) {
@@ -396,6 +397,7 @@ function WhPartyLedger({ onRelock }) {
   const totals = useMemo(() => whPartyTotals(rows), [rows]);
   const items = useMemo(() => whPartyItems(rows), [rows]);
   const link = (data.partyLedgerLinks || []).find((l) => l.partyId === id);
+  const journalCount = (data.journal || []).filter((e) => e.kind === 'whParty' && e.partyId === id).length;
 
   if (!party) {
     return <Empty icon={Users} title="Party not found" message="This party may have been removed." action={<Button onClick={() => navigate('/warehouse/parties')}>Back to Parties</Button>} />;
@@ -503,9 +505,11 @@ function WhPartyLedger({ onRelock }) {
         <div className="seg">
           <button className={view === 'statement' ? 'active' : ''} onClick={() => setView('statement')}>Khata</button>
           <button className={view === 'items' ? 'active' : ''} onClick={() => setView('items')}>Items</button>
+          <button className={view === 'journal' ? 'active' : ''} onClick={() => setView('journal')}>Journal{journalCount ? ` (${journalCount})` : ''}</button>
         </div>
         <span className="small muted">
-          {view === 'statement'
+          {view === 'journal' ? 'Your own notes with any fields you choose — separate from stock and payments'
+            : view === 'statement'
             ? sc ? 'Goods at their line rates and money either way, with one running balance — below zero means you owe them' : 'Every document with this party, oldest first'
             : 'What came from and went to this party, item by item'}
         </span>
@@ -619,6 +623,8 @@ function WhPartyLedger({ onRelock }) {
           ) : <Empty icon={Package} title="No goods yet" message="Items appear here once goods are received from or sent to this party." />}
         </Card>
       )}
+
+      {view === 'journal' && <PartyJournal kind="whParty" party={party} />}
 
       <Modal open={editOpen} title={`Edit ${party.name}`} onClose={() => setEditOpen(false)}>
         {editOpen && <WhPartyForm party={party} onSaved={() => setEditOpen(false)} onCancel={() => setEditOpen(false)} />}

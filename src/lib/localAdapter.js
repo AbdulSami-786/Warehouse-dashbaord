@@ -5,7 +5,7 @@
 import { CONFIG, PAYMENT_METHODS } from './config.js';
 import { r2, today, addDays, uid, phoneKey, nameKey, dayOf } from './format.js';
 import {
-  billState, billTotals, payableNow, lineDelivered, lineReceived, supplierBalance,
+  billState, billTotals, isOpeningBill, payableNow, lineDelivered, lineReceived, supplierBalance,
   MOVE_TYPES, warehouseStockMap, itemStock,
 } from './calc.js';
 import { accessOf, stripCostData, COST_PAGES, PAGES } from './permissions.js';
@@ -39,7 +39,7 @@ function emptyDb() {
     cheques: [], partyAdvances: [], purchases: [], employees: [], employeeTx: [], expenses: [],
     stockLoss: [], assets: [], activityLog: [], users: [], partyLedgerLinks: [], suppliers: [],
     purchaseBills: [], supplierPayments: [], supplierReturns: [],
-    warehouses: [], whMoves: [], whMoveLines: [], whExpenses: [], whParties: [], whPartyPayments: [],
+    warehouses: [], whMoves: [], whMoveLines: [], whExpenses: [], whParties: [], whPartyPayments: [], journal: [],
     settings: {
       shopName: CONFIG.defaultShopName, phone: '', address: '', email: '', logoUrl: '',
       roundingRule: 'nearest1', priceAlertThreshold: 15, defaultCreditDays: 7, customMethods: [],
@@ -104,6 +104,20 @@ function meOf(db) {
 let importing = false;
 const IMPORT_ACTIONS = new Set(['saveParty', 'saveItem', 'saveSupplier', 'saveEmployee', 'saveExpense', 'saveAsset', 'saveBill',
   'savePurchaseBill', 'saveWarehouse', 'saveWhMove', 'saveWhExpense', 'saveWhParty']);
+
+/** Where each kind of journal entry's owner lives in the database. */
+const JOURNAL_KINDS = { party: 'parties', supplier: 'suppliers', whParty: 'whParties' };
+
+/** A journal entry's fields: {label, value} pairs the user made up, blanks dropped. */
+function cleanJournalFields(list) {
+  let rows = list;
+  if (typeof rows === 'string') {
+    try { rows = JSON.parse(rows); } catch { rows = []; }
+  }
+  return (Array.isArray(rows) ? rows : [])
+    .map((f) => ({ label: String(f?.label || '').trim(), value: String(f?.value || '').trim() }))
+    .filter((f) => f.label || f.value);
+}
 
 /** Money on a warehouse party's khata is for those who see cost prices (MONEY_ACTIONS in Code.gs). */
 function assertSeesMoney(db) {
@@ -221,6 +235,48 @@ function nextBillNo(db) {
   }
   db.billCounter[y] = max + 1;
   return `${y}-${String(db.billCounter[y]).padStart(4, '0')}`;
+}
+
+const openingBillOf = (db, partyId) => db.bills.find((b) => b.partyId === partyId && isOpeningBill(b) && b.status !== 'voided');
+
+/** Refuse a change that would leave the opening bill with less than has already been paid against it. */
+function assertOpeningBill(db, partyId, amount) {
+  const bill = openingBillOf(db, partyId);
+  if (!bill) return;
+  const st = billState(bill, db);
+  const covered = r2(st.paid + st.pendingCheques + st.returned);
+  if (covered > amount + 0.004) {
+    throw new Error(amount > 0
+      ? `${covered.toFixed(2)} has already been received against the opening balance, so it cannot be set below that. Reverse a payment first.`
+      : 'Payments are already recorded against the opening balance, so it cannot be removed. Reverse them first.');
+  }
+}
+
+/** Create, change or cancel the bill that carries a party's previous balance. */
+function writeOpeningBill(db, partyId, amount, date) {
+  const bill = openingBillOf(db, partyId);
+  const on = String(date || '').slice(0, 10);
+  if (bill) {
+    const before = { ...bill };
+    if (amount > 0) {
+      Object.assign(bill, { subtotal: amount, roundOff: 0, totalAmount: amount, date: on || bill.date, dueDate: on || bill.date });
+    } else {
+      Object.assign(bill, { status: 'voided', voidReason: 'Opening balance removed', voidedAt: new Date().toISOString() });
+    }
+    log(db, 'bill', bill.id, 'edit', amount > 0 ? `Opening balance changed to ${amount}` : 'Opening balance removed', before, bill);
+    return;
+  }
+  if (!(amount > 0)) return;
+  const date_ = on || today();
+  const n = db.bills.filter((b) => isOpeningBill(b)).length + 1;
+  const rec = {
+    id: uid('bil'), billNo: `OB-${String(n).padStart(4, '0')}`, partyId, date: date_,
+    subtotal: amount, roundOff: 0, totalAmount: amount, status: 'due', dueDate: date_,
+    note: 'Balance brought forward from the previous books', createdAt: new Date().toISOString(),
+    delivery: 'delivered', isOpening: true,
+  };
+  db.bills.push(rec);
+  log(db, 'bill', rec.id, 'create', `Opening balance ${amount}`);
 }
 
 function nextPurchaseNo(purchaseBills = [], date = today()) {
@@ -396,11 +452,17 @@ async function perform(action, p = {}) {
       const ph = phoneKey(p.phone);
       const phDup = ph && db.parties.find((x) => x.id !== p.id && phoneKey(x.phone) === ph);
       if (phDup) throw new Error(`This mobile number is already registered on party "${phDup.name}".`);
+      // The balance from the paper books lives on a bill of its own, not on the party.
+      const { openingBalance, openingDate, ...fields } = p;
+      const opening = openingBalance === undefined ? null : r2(openingBalance === '' || openingBalance === null ? 0 : Number(openingBalance));
+      if (opening !== null && (!Number.isFinite(opening) || opening < 0)) throw new Error('Opening balance must be zero or more');
       if (p.id) {
         const i = db.parties.findIndex((x) => x.id === p.id);
         if (i < 0) throw new Error('Party not found');
+        if (opening !== null) assertOpeningBill(db, p.id, opening);
         const before = { ...db.parties[i] };
-        db.parties[i] = { ...before, ...p };
+        db.parties[i] = { ...before, ...fields };
+        if (opening !== null) writeOpeningBill(db, p.id, opening, openingDate);
         log(db, 'party', p.id, 'edit', `Edited party "${p.name}"`, before, db.parties[i]);
         save();
         return db.parties[i];
@@ -412,7 +474,8 @@ async function perform(action, p = {}) {
         status: 'active', createdAt: new Date().toISOString(),
       };
       db.parties.push(rec);
-      log(db, 'party', rec.id, 'create', `Added party "${rec.name}"`);
+      if (opening) writeOpeningBill(db, rec.id, opening, openingDate);
+      log(db, 'party', rec.id, 'create', `Added party "${rec.name}"${opening ? ` with opening balance ${opening}` : ''}`);
       save();
       return rec;
     }
@@ -489,6 +552,7 @@ async function perform(action, p = {}) {
         if (!Number.isFinite(q) || q <= 0) throw new Error(`Line ${i + 1}: quantity must be greater than zero`);
         if (!Number.isFinite(price) || price < 0) throw new Error(`Line ${i + 1}: price must be zero or more`);
         if (!db.items.some((it) => it.id === l.itemId)) throw new Error(`Line ${i + 1}: item not found`);
+        if (l.warehouseId && !db.warehouses.some((w) => w.id === l.warehouseId)) throw new Error(`Line ${i + 1}: warehouse not found`);
       });
       const totals = billTotals(p.lines.map((l) => ({ qty: Number(l.qty), price: Number(l.price) })), db.settings.roundingRule);
       const editing = !!p.id;
@@ -510,6 +574,7 @@ async function perform(action, p = {}) {
           throw new Error('This bill has payments recorded against it, so it cannot be moved to another party. Void it and write a new bill for the right party instead.');
         }
       }
+      assertBillWarehouseStock(db, p.lines, p.id);
       let payTotal = 0;
       (p.payments || []).forEach((pay) => {
         if (!(Number(pay.amount) > 0)) return;
@@ -567,6 +632,7 @@ async function perform(action, p = {}) {
           id: uid('bli'), billId: bill.id, itemId: l.itemId, qty: q, unit: l.unit || item?.baseUnit || 'Piece',
           price: r2(l.price), costPriceAtSale: r2(l.costPriceAtSale ?? item?.costPrice ?? 0),
           lineTotal: r2((Number(l.qty) || 0) * (Number(l.price) || 0)), deliveredQty: r2(delivered),
+          warehouseId: l.warehouseId || '',
         });
         db.partyItemPrices.push({
           id: uid('pip'), partyId: bill.partyId, itemId: l.itemId, price: r2(l.price),
@@ -635,6 +701,64 @@ async function perform(action, p = {}) {
       const sent = r2(lines.reduce((s, l) => s + lineDelivered(l, bill), 0));
       const total = r2(lines.reduce((s, l) => s + (Number(l.qty) || 0), 0));
       log(db, 'bill', bill.id, 'edit', `Bill ${bill.billNo} delivery updated: ${sent} of ${total} delivered`, before, bill);
+      save();
+      return bill;
+    }
+
+    /**
+     * Hand over goods from a warehouse. The quantity delivered comes off that
+     * warehouse's stock: a line sent from elsewhere is split, and the delivered
+     * part becomes its own line against the warehouse. The bill total is
+     * unchanged. Mirrors deliverFromWarehouse in Code.gs.
+     */
+    case 'deliverFromWarehouse': {
+      const bill = db.bills.find((b) => b.id === p.billId);
+      if (!bill) throw new Error('Bill not found');
+      if (bill.status === 'voided') throw new Error('A voided bill cannot be delivered');
+      const wh = db.warehouses.find((w) => w.id === p.warehouseId);
+      if (!wh) throw new Error('Select a warehouse');
+      if (wh.status === 'archived') throw new Error(`Warehouse "${wh.name}" is archived. Restore it first.`);
+      const changes = (p.lines || []).filter((c) => Number(c.qty) > 0);
+      if (!changes.length) throw new Error('Nothing to deliver');
+      const before = { ...bill };
+      const stock = warehouseStockMap(db).get(wh.id) || new Map();
+      const want = new Map();
+      const seen = new Set();
+      const plan = changes.map((c) => {
+        const line = db.billItems.find((l) => l.id === c.id && l.billId === bill.id);
+        if (!line) throw new Error('Bill line not found');
+        if (seen.has(line.id)) throw new Error('A line was listed twice');
+        seen.add(line.id);
+        const item = db.items.find((i) => i.id === line.itemId);
+        const q = r2(Number(c.qty));
+        const left = r2((Number(line.qty) || 0) - lineDelivered(line, bill));
+        if (!Number.isFinite(q) || q > left + 0.0001) throw new Error(`${item?.name || 'Item'}: only ${left} still to deliver`);
+        // Goods already booked against this warehouse are already off its stock.
+        if ((line.warehouseId || '') !== wh.id) want.set(line.itemId, r2((want.get(line.itemId) || 0) + q));
+        return [line, q];
+      });
+      for (const [itemId, q] of want) {
+        const have = stock.get(itemId) || 0;
+        if (q > have + 0.0001) {
+          const item = db.items.find((i) => i.id === itemId);
+          throw new Error(`${item?.name || 'Item'}: only ${have} ${item?.baseUnit || ''} in ${wh.name}, cannot deliver ${q} from it.`.replace(/\s+,/, ','));
+        }
+      }
+      plan.forEach(([line, q]) => {
+        const total = Number(line.qty) || 0;
+        const done = lineDelivered(line, bill);
+        if ((line.warehouseId || '') === wh.id) { line.deliveredQty = r2(done + q); return; }
+        if (done < 0.0001 && q >= total - 0.0001) { line.warehouseId = wh.id; line.deliveredQty = r2(total); return; }
+        line.qty = r2(total - q);
+        line.lineTotal = r2(line.qty * (Number(line.price) || 0));
+        line.deliveredQty = r2(done);
+        db.billItems.push({
+          ...line, id: uid('bli'), qty: q, lineTotal: r2(q * (Number(line.price) || 0)), deliveredQty: q, warehouseId: wh.id,
+        });
+      });
+      syncDeliveryFlag(db, bill);
+      const sent = r2(plan.reduce((s, [, q]) => s + q, 0));
+      log(db, 'bill', bill.id, 'edit', `Bill ${bill.billNo}: ${sent} delivered from ${wh.name}`, before, bill);
       save();
       return bill;
     }
@@ -1591,6 +1715,42 @@ async function perform(action, p = {}) {
       return { ok: true };
     }
 
+    /* ----- Journal: notes on any ledger, no stock, payment or balance (see Code.gs) ----- */
+    case 'saveJournal': {
+      const table = JOURNAL_KINDS[p.kind];
+      if (!table) throw new Error('Unknown ledger type');
+      const owner = db[table].find((x) => x.id === p.partyId);
+      if (!owner) throw new Error('Party not found');
+      const fields = cleanJournalFields(p.fields);
+      const title = String(p.title || '').trim();
+      if (!title && !fields.length) throw new Error('Write at least a title or one field');
+      const data = { date: p.date || today(), title, fields: JSON.stringify(fields), updatedAt: new Date().toISOString() };
+      if (p.id) {
+        const i = db.journal.findIndex((x) => x.id === p.id);
+        if (i < 0) throw new Error('Journal entry not found');
+        db.journal[i] = { ...db.journal[i], ...data };
+        log(db, 'journal', p.id, 'edit', `Edited journal entry — ${owner.name}`);
+        save();
+        return db.journal[i];
+      }
+      const rec = { id: uid('jrn'), kind: p.kind, partyId: owner.id, ...data, createdAt: data.updatedAt, createdBy: getSession()?.username || 'system' };
+      db.journal.push(rec);
+      log(db, 'journal', rec.id, 'create', `Added journal entry — ${owner.name}`);
+      save();
+      return rec;
+    }
+
+    case 'deleteJournal': {
+      const i = db.journal.findIndex((x) => x.id === p.id);
+      if (i < 0) throw new Error('Journal entry not found');
+      const rec = db.journal[i];
+      const owner = db[JOURNAL_KINDS[rec.kind]]?.find((x) => x.id === rec.partyId);
+      db.journal.splice(i, 1);
+      log(db, 'journal', rec.id, 'delete', `Deleted journal entry${owner ? ` — ${owner.name}` : ''}`, rec, null);
+      save();
+      return { ok: true };
+    }
+
     /* ----- Stock count, users, import (see the same actions in Code.gs) ----- */
     case 'saveStockCount': {
       const wh = db.warehouses.find((w) => w.id === p.warehouseId);
@@ -1719,6 +1879,30 @@ function assertWarehouseHas(db, wh, lines, verb = 'send') {
       throw new Error(verb === 'cancel'
         ? `${item?.name || 'Item'}: only ${have} left in ${wh.name}, so this movement cannot be cancelled — the goods have already moved on.`
         : `${item?.name || 'Item'}: only ${have} ${item?.baseUnit || ''} in ${wh.name}, cannot ${verb} ${q}.`.replace(/\s+,/, ','));
+    }
+  }
+}
+
+/**
+ * Refuse a bill whose warehouse lines take more than the warehouse holds.
+ * A bill being edited gets back what it took before, since its old lines are replaced.
+ */
+function assertBillWarehouseStock(db, lines, ownBillId) {
+  const want = new Map();
+  lines.forEach((l) => {
+    if (!l.warehouseId) return;
+    const k = `${l.warehouseId}|${l.itemId}`;
+    want.set(k, r2((want.get(k) || 0) + Number(l.qty)));
+  });
+  if (!want.size) return;
+  const stock = warehouseStockMap({ ...db, billItems: db.billItems.filter((l) => !ownBillId || l.billId !== ownBillId) });
+  for (const [k, q] of want) {
+    const [whId, itemId] = k.split('|');
+    const have = stock.get(whId)?.get(itemId) || 0;
+    if (q > have + 0.0001) {
+      const item = db.items.find((i) => i.id === itemId);
+      const wh = db.warehouses.find((w) => w.id === whId);
+      throw new Error(`${item?.name || 'Item'}: only ${have} ${item?.baseUnit || ''} in ${wh?.name || 'the warehouse'}, cannot sell ${q} from it.`.replace(/\s+,/, ','));
     }
   }
 }

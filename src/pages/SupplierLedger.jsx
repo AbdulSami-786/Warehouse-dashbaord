@@ -16,6 +16,7 @@ import {
   Button, Card, Confirm, DateRange, Empty, Field, Input, Modal, Money, PageHead, Pill, SearchBox, Select, Stat,
 } from '../components/ui.jsx';
 import { LineProgressModal, ProgressCount } from '../components/forms.jsx';
+import PartyJournal from '../components/PartyJournal.jsx';
 import {
   EditPurchaseModal, PurchaseBillModal, SupplierForm, SupplierPaymentModal, SupplierReturnModal,
 } from '../components/supplierForms.jsx';
@@ -307,6 +308,8 @@ export default function SupplierLedger() {
           />
         )}
       </Card>
+
+      <div className="mt-2"><PartyJournal kind="supplier" party={sup} /></div>
 
       <Modal
         open={!!openBill && !editLine && !delLine && !receiving}

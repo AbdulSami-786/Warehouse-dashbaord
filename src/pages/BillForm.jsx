@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
-  CreditCard, History, PackagePlus, Plus, Save, Trash2, TriangleAlert, Wallet, X,
+  CreditCard, History, PackagePlus, Plus, Save, Trash2, TriangleAlert, Wallet, Warehouse, X,
 } from 'lucide-react';
 import { useApp } from '../lib/AppContext.jsx';
 import { api } from '../lib/api.js';
 import { UNITS } from '../lib/config.js';
 import { money, r2, today, addDays, fmtDate, uid } from '../lib/format.js';
 import {
-  billTotals, billState, billStates, partyDue, advanceAvailable, itemStock,
+  billTotals, billState, billStates, partyDue, advanceAvailable, itemStock, warehouseStockMap,
 } from '../lib/calc.js';
 import { printBill } from '../lib/exporters.js';
 import {
@@ -65,6 +65,100 @@ function SumRow({ label, value, showSign = false, muted = false }) {
   );
 }
 
+/**
+ * Pick goods that go out of a warehouse: which warehouse, which item, how many.
+ * Only items the chosen warehouse actually holds are offered, and the quantity
+ * cannot be more than it holds (less what other lines of this bill already take).
+ */
+function WarehousePick({ open, onClose, warehouses, items, availableAt, priceFor, onAdd }) {
+  const [whId, setWhId] = useState('');
+  const [itemId, setItemId] = useState('');
+  const [qty, setQty] = useState('1');
+  const [price, setPrice] = useState('');
+  const [round, setRound] = useState(0);
+
+  useEffect(() => {
+    if (!open) return;
+    setWhId(warehouses[0]?.id || '');
+    setItemId('');
+    setQty('1');
+    setPrice('');
+    setRound((r) => r + 1);
+  }, [open, warehouses]);
+
+  const available = itemId && whId ? availableAt(itemId, whId) : 0;
+  const stocked = useMemo(
+    () => (whId ? items.filter((i) => availableAt(i.id, whId) > 0) : []),
+    [items, whId, availableAt],
+  );
+  const item = items.find((i) => i.id === itemId);
+  const qtyNum = Number(qty);
+  const error = !itemId ? '' : !(qtyNum > 0) ? 'Enter a quantity' : qtyNum > available + 0.0001 ? `Only ${available} ${item?.baseUnit || ''} available` : '';
+  const ready = !!itemId && !!whId && qtyNum > 0 && !error;
+
+  const pick = (v) => {
+    setItemId(v || '');
+    setPrice(v ? String(priceFor(v)?.price ?? '') : '');
+  };
+  const add = (another) => {
+    if (!ready) return;
+    onAdd({ itemId, warehouseId: whId, qty: String(qtyNum), price });
+    if (another) {
+      setItemId('');
+      setQty('1');
+      setPrice('');
+      setRound((r) => r + 1);
+    } else onClose();
+  };
+
+  return (
+    <Modal
+      open={open}
+      title="Add items from a warehouse"
+      onClose={onClose}
+      footer={(
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button onClick={() => add(true)} disabled={!ready}>Add &amp; add another</Button>
+          <Button variant="primary" icon={Plus} onClick={() => add(false)} disabled={!ready}>Add to bill</Button>
+        </>
+      )}
+    >
+      <div className="form-grid">
+        <Field label="Warehouse" className="full">
+          <Select
+            value={whId}
+            onChange={(e) => { setWhId(e.target.value); setItemId(''); setPrice(''); setRound((r) => r + 1); }}
+            options={warehouses.map((w) => ({ value: w.id, label: w.name }))}
+          />
+        </Field>
+        <Field
+          label="Item"
+          className="full"
+          hint={whId && !stocked.length ? 'This warehouse has no stock of any item.' : ''}
+        >
+          <Typeahead
+            key={`${whId}-${round}`}
+            items={stocked}
+            value={itemId}
+            onChange={pick}
+            getLabel={(i) => i.name}
+            getSub={(i) => `${availableAt(i.id, whId)} ${i.baseUnit} in stock`}
+            placeholder="Search an item in this warehouse…"
+            autoFocus
+          />
+        </Field>
+        <Field label={item ? `Quantity (${item.baseUnit})` : 'Quantity'} hint={itemId ? `${available} ${item?.baseUnit || ''} in this warehouse` : ''} error={error}>
+          <Input type="number" min="0" step="any" value={qty} onChange={(e) => setQty(e.target.value)} />
+        </Field>
+        <Field label="Rate">
+          <Input type="number" min="0" step="any" value={price} onChange={(e) => setPrice(e.target.value)} />
+        </Field>
+      </div>
+    </Modal>
+  );
+}
+
 export default function BillForm() {
   const { data, settings, methods, activeParties, activeItems, mutate, toast, access } = useApp();
   const navigate = useNavigate();
@@ -102,7 +196,7 @@ export default function BillForm() {
     setNote(editing.note || '');
     setPending(editing.delivery === 'pending');
     setLines(data.billItems.filter((l) => l.billId === editing.id).map((l) => ({
-      key: uid('l'), itemId: l.itemId, qty: String(l.qty), price: String(l.price), unit: l.unit, costPriceAtSale: l.costPriceAtSale,
+      key: uid('l'), itemId: l.itemId, qty: String(l.qty), price: String(l.price), unit: l.unit, costPriceAtSale: l.costPriceAtSale, warehouseId: l.warehouseId || '',
     })));
     setPays([newPay()]);
   }, [editing, data.billItems]);
@@ -133,13 +227,18 @@ export default function BillForm() {
   const focusRef = useRef(null);
   const [focusKey, setFocusKey] = useState(null);
 
-  const addLine = (itemId = '') => {
+  const [whPick, setWhPick] = useState(false);
+
+  /** `given` carries what the warehouse picker already chose: quantity, rate, warehouse. */
+  const addLine = (itemId = '', given = {}) => {
     const item = data.items.find((i) => i.id === itemId);
     const last = itemId && partyId ? lastPrice(partyId, itemId) : null;
     const key = uid('l');
+    const rate = given.price !== undefined && given.price !== '' ? String(given.price) : last ? String(last.price) : '';
     setLines((ls) => [...ls, {
-      key, itemId, qty: '1', price: last ? String(last.price) : '',
-      unit: last?.unit || item?.baseUnit || 'Piece', costPriceAtSale: item?.costPrice ?? 0, autoFilled: !!last,
+      key, itemId, qty: given.qty ?? '1', price: rate,
+      unit: last?.unit || item?.baseUnit || 'Piece', costPriceAtSale: item?.costPrice ?? 0,
+      autoFilled: !!last && rate === String(last.price), warehouseId: given.warehouseId || '',
     }]);
     if (!itemId) setFocusKey(key);
     return key;
@@ -155,7 +254,7 @@ export default function BillForm() {
   // Ctrl+Shift+A adds a line, unless a dialog is open.
   const addLineRef = useRef(addLine);
   addLineRef.current = addLine;
-  const dialogOpen = addParty || addItem || !!historyFor;
+  const dialogOpen = addParty || addItem || whPick || !!historyFor;
   const dialogRef = useRef(dialogOpen);
   dialogRef.current = dialogOpen;
   useEffect(() => {
@@ -192,6 +291,22 @@ export default function BillForm() {
     const item = data.items.find((i) => i.id === l.itemId);
     return { itemName: item?.name, oldPrice: was, newPrice: now, pct, up: now > was, lastDate: last.date };
   };
+
+  // Where stock can be taken from: the shop, or any active warehouse.
+  const warehouses = useMemo(() => (data.warehouses || []).filter((w) => w.status !== 'archived'), [data.warehouses]);
+  const whStock = useMemo(() => warehouseStockMap(data), [data]);
+  // Stock in a place, not counting what this bill itself already took when it is being edited.
+  const stockAt = (itemId, whId) => {
+    const own = editing
+      ? data.billItems.filter((x) => x.billId === editing.id && x.itemId === itemId && (x.warehouseId || '') === (whId || ''))
+        .reduce((s, x) => s + (Number(x.qty) || 0), 0)
+      : 0;
+    const have = whId ? whStock.get(whId)?.get(itemId) || 0 : itemStock(itemId, data);
+    return r2(have + own);
+  };
+  // What a warehouse can still give this bill: its stock less what other lines here already take.
+  const availableAt = (itemId, whId) => r2(stockAt(itemId, whId)
+    - lines.filter((l) => l.itemId === itemId && l.warehouseId === whId).reduce((s, l) => s + (Number(l.qty) || 0), 0));
 
   const valid = useMemo(() => lines.filter((l) => l.itemId && Number(l.qty) > 0 && Number(l.price) >= 0), [lines]);
   const totals = useMemo(() => billTotals(valid.map((l) => ({ qty: Number(l.qty), price: Number(l.price) })), settings.roundingRule), [valid, settings.roundingRule]);
@@ -300,7 +415,7 @@ export default function BillForm() {
       const payload = {
         id: editing?.id, partyId, date,
         // Someone who cannot see cost leaves it to the server, which knows it.
-        lines: valid.map((l) => ({ itemId: l.itemId, qty: Number(l.qty), price: Number(l.price), unit: l.unit, ...(access.seesCost ? { costPriceAtSale: l.costPriceAtSale } : {}) })),
+        lines: valid.map((l) => ({ itemId: l.itemId, qty: Number(l.qty), price: Number(l.price), unit: l.unit, warehouseId: l.warehouseId || '', ...(access.seesCost ? { costPriceAtSale: l.costPriceAtSale } : {}) })),
         payments: pays.filter((p) => Number(p.amount) > 0).map((p) => ({ method: p.method, amount: Number(p.amount), cheque: p.cheque, note: '' })),
         advanceApplied: Number(applyAdvance) || 0,
         subtotal: totals.subtotal, roundOff: totals.roundOff, total: totals.total,
@@ -405,9 +520,16 @@ export default function BillForm() {
           <Card
             title="Items"
             actions={(
-              <Button size="sm" icon={Plus} onClick={() => addLine()} title="Add line (Ctrl+Shift+A)">
-                Add line <kbd className="kbd-hint">Ctrl+Shift+A</kbd>
-              </Button>
+              <div className="row wrap" style={{ gap: 8 }}>
+                {warehouses.length > 0 && (
+                  <Button size="sm" icon={Warehouse} onClick={() => setWhPick(true)} title="Add items that go out of a warehouse">
+                    From warehouse
+                  </Button>
+                )}
+                <Button size="sm" icon={Plus} onClick={() => addLine()} title="Add line (Ctrl+Shift+A)">
+                  Add line <kbd className="kbd-hint">Ctrl+Shift+A</kbd>
+                </Button>
+              </div>
             )}
           >
             {frequent.length > 0 && (
@@ -428,7 +550,8 @@ export default function BillForm() {
                   const item = data.items.find((i) => i.id === l.itemId);
                   const alert = priceAlert(l);
                   const last = l.itemId && partyId ? lastPrice(partyId, l.itemId) : null;
-                  const stock = l.itemId ? itemStock(l.itemId, data) : null;
+                  const stock = l.itemId ? stockAt(l.itemId, l.warehouseId) : null;
+                  const fromName = l.warehouseId ? warehouses.find((w) => w.id === l.warehouseId)?.name || 'warehouse' : 'shop';
                   const units = item ? [item.baseUnit, ...(item.altUnit ? [item.altUnit] : [])] : UNITS;
                   return (
                     <div key={l.key} style={lineBox}>
@@ -464,6 +587,15 @@ export default function BillForm() {
                           <label className="small muted">Rate</label>
                           <Input type="number" min="0" step="any" value={l.price} onChange={(e) => updLine(l.key, { price: e.target.value, autoFilled: false })} />
                         </div>
+                        {warehouses.length > 0 && (
+                          <div style={{ minWidth: 150 }}>
+                            <label className="small muted">Taken from</label>
+                            <Select value={l.warehouseId || ''} onChange={(e) => updLine(l.key, { warehouseId: e.target.value })}>
+                              <option value="">Shop</option>
+                              {warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+                            </Select>
+                          </div>
+                        )}
                         <div className="spacer hide-mobile" />
                         <div className="line-amount" style={{ textAlign: 'right' }}>
                           <label className="small muted">Amount</label>
@@ -479,8 +611,8 @@ export default function BillForm() {
                           <span className="small muted">1 {item.altUnit} = {item.conversionRate} {item.baseUnit}</span>
                         )}
                         {stock !== null && (Number(l.qty) > stock
-                          ? <span className="pill pill-due"><TriangleAlert size={11} />Only {stock} {item?.baseUnit} in stock</span>
-                          : <span className="small muted">Stock: {stock} {item?.baseUnit}</span>)}
+                          ? <span className="pill pill-due"><TriangleAlert size={11} />Only {stock} {item?.baseUnit} in {fromName}</span>
+                          : <span className="small muted">{l.warehouseId ? `In ${fromName}` : 'Stock'}: {stock} {item?.baseUnit}</span>)}
                         {alert && (
                           <span className="pill pill-partial">
                             <TriangleAlert size={11} />{alert.up ? 'Up' : 'Down'} {alert.pct.toFixed(0)}% vs last {money(alert.oldPrice)}
@@ -638,6 +770,15 @@ export default function BillForm() {
         danger
         onConfirm={clearAll}
         onCancel={() => setConfirmClear(false)}
+      />
+      <WarehousePick
+        open={whPick}
+        onClose={() => setWhPick(false)}
+        warehouses={warehouses}
+        items={activeItems}
+        availableAt={availableAt}
+        priceFor={(iid) => (partyId ? lastPrice(partyId, iid) : null)}
+        onAdd={(g) => addLine(g.itemId, g)}
       />
       <Modal open={addParty} title="Add New Party" onClose={() => setAddParty(false)}>
         <PartyForm initialName={newName} onSaved={(p) => { setPartyId(p.id); setAddParty(false); toast(`Party "${p.name}" added`); }} onCancel={() => setAddParty(false)} />

@@ -4,7 +4,7 @@
 
 import { r2, inRange, dayOf } from './format.js';
 import {
-  billStates, itemStock, lineReceived, warehouseStockMap, MOVE_TYPES, lineProfit,
+  billStates, isOpeningBill, itemStock, lineReceived, warehouseStockMap, MOVE_TYPES, lineProfit,
 } from './calc.js';
 
 export const SHOP = 'shop';
@@ -59,7 +59,8 @@ export function stockEvents(data, from = null, to = null) {
   (data.billItems || []).forEach((l) => {
     const b = bills.get(l.billId);
     if (!b || b.status === 'voided') return;
-    push({ date: dayOf(b.date), location: SHOP, locationName: 'Shop', kind: 'Sale', itemId: l.itemId, qtyIn: 0, qtyOut: Number(l.qty) || 0, ref: b.billNo, party: partyName.get(b.partyId) || '' });
+    const wh = l.warehouseId || '';
+    push({ date: dayOf(b.date), location: wh || SHOP, locationName: wh ? whName.get(wh) || 'Warehouse' : 'Shop', kind: 'Sale', itemId: l.itemId, qtyIn: 0, qtyOut: Number(l.qty) || 0, ref: b.billNo, party: partyName.get(b.partyId) || '' });
   });
   (data.returns || []).forEach((r) => {
     if (!r.restock) return;
@@ -124,7 +125,7 @@ export function salesByItem(data, from = null, to = null) {
 
 /** What each party bought, paid and still owes in the period. */
 export function salesByParty(data, from = null, to = null) {
-  const states = billStates((data.bills || []), data).filter((b) => b.status !== 'voided' && inRange(b.date, from, to));
+  const states = billStates((data.bills || []), data).filter((b) => b.status !== 'voided' && !isOpeningBill(b) && inRange(b.date, from, to));
   const byParty = new Map();
   states.forEach((b) => {
     const g = byParty.get(b.partyId) || { partyId: b.partyId, bills: 0, amount: 0, paid: 0, due: 0 };

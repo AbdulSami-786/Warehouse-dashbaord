@@ -5,7 +5,7 @@ import { useApp } from '../lib/AppContext.jsx';
 import {
   money, r2, fmtDate, norm, rangeFor, inRange, BUCKET_META,
 } from '../lib/format.js';
-import { billStates, deliveryProgress } from '../lib/calc.js';
+import { billStates, deliveryProgress, isOpeningBill } from '../lib/calc.js';
 import { exportCSV, printReport, raw, esc } from '../lib/exporters.js';
 import {
   Button, Card, DateRange, Empty, Money, PageHead, Pill, SearchBox, Select,
@@ -39,7 +39,7 @@ export default function Bills() {
   const range = useMemo(() => rangeFor(preset, custom), [preset, custom]);
 
   const rows = useMemo(() => {
-    const states = billStates(data.bills, data).map((b) => {
+    const states = billStates(data.bills, data).filter((b) => !isOpeningBill(b)).map((b) => {
       const p = deliveryProgress(b, data.billItems);
       return { ...b, deliveryPill: p.state === 'partial' ? 'part-delivered' : p.state === 'pending' ? 'not-delivered' : null };
     });

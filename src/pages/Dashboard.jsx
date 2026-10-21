@@ -11,7 +11,7 @@ import {
   money, r2, fmtDate, daysSince, pctChange, rangeFor, inRange, rangeLabel, isoDate, BUCKET_META, whatsappUrl,
 } from '../lib/format.js';
 import {
-  billStates, collectedPayments, grossProfit, itemStock, methodBalances, partyDue, reorderSuggestion,
+  billStates, collectedPayments, grossProfit, isOpeningBill, itemStock, methodBalances, partyDue, reorderSuggestion,
 } from '../lib/calc.js';
 import { exportBackup } from '../lib/exporters.js';
 import {
@@ -34,7 +34,7 @@ export default function Dashboard() {
 
   const kpi = useMemo(() => {
     const live = states.filter((b) => b.status !== 'voided');
-    const inPeriod = live.filter((b) => inRange(b.date, range.from, range.to));
+    const inPeriod = live.filter((b) => !isOpeningBill(b) && inRange(b.date, range.from, range.to));
     const sales = r2(inPeriod.reduce((s, b) => s + b.net, 0));
     const collections = r2(collectedPayments(data.payments, data.cheques).filter((p) => inRange(p.date, range.from, range.to)).reduce((s, p) => s + (Number(p.amount) || 0), 0));
     const cashInHand = r2(methodBalances(methods, data).reduce((s, b) => s + b.balance, 0));
@@ -48,7 +48,7 @@ export default function Dashboard() {
     const cur = rangeFor('month');
     const last = rangeFor('lastMonth');
     const live = states.filter((b) => b.status !== 'voided');
-    const sales = (r) => r2(live.filter((b) => inRange(b.date, r.from, r.to)).reduce((s, b) => s + b.net, 0));
+    const sales = (r) => r2(live.filter((b) => !isOpeningBill(b) && inRange(b.date, r.from, r.to)).reduce((s, b) => s + b.net, 0));
     const coll = (r) => r2(collectedPayments(data.payments, data.cheques).filter((p) => inRange(p.date, r.from, r.to)).reduce((s, p) => s + (Number(p.amount) || 0), 0));
     const exp = (r) => r2(data.expenses.filter((e) => inRange(e.date, r.from, r.to)).reduce((s, e) => s + (Number(e.amount) || 0), 0));
     const prof = (r) => {
@@ -85,7 +85,7 @@ export default function Dashboard() {
     .sort((a, b) => a.stock - b.stock).slice(0, 5), [data]);
   const topParties = useMemo(() => {
     const m = new Map();
-    states.filter((b) => b.status !== 'voided' && inRange(b.date, range.from, range.to)).forEach((b) => m.set(b.partyId, r2((m.get(b.partyId) || 0) + b.net)));
+    states.filter((b) => b.status !== 'voided' && !isOpeningBill(b) && inRange(b.date, range.from, range.to)).forEach((b) => m.set(b.partyId, r2((m.get(b.partyId) || 0) + b.net)));
     return [...m.entries()].map(([pid, revenue]) => ({ party: data.parties.find((p) => p.id === pid), revenue, due: partyDue(pid, states) }))
       .filter((x) => x.party).sort((a, b) => b.revenue - a.revenue).slice(0, 5);
   }, [states, data.parties, range]);

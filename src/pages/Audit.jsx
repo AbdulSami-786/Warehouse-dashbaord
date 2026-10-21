@@ -4,7 +4,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../lib/AppContext.jsx';
 import { money, r2, fmtDate, isoDate, pctChange, rangeFor, inRange } from '../lib/format.js';
-import { billStates, methodBalances, periodSummary } from '../lib/calc.js';
+import { billStates, isOpeningBill, methodBalances, periodSummary } from '../lib/calc.js';
 import { exportCSV, printReport } from '../lib/exporters.js';
 import {
   Button, Card, DateRange, Money, PageHead, Stat,
@@ -30,7 +30,7 @@ export default function Audit() {
   }, [data, range]);
   const balances = useMemo(() => methodBalances(methods, data), [methods, data]);
   const cash = r2(balances.reduce((s, b) => s + b.balance, 0));
-  const newCredit = useMemo(() => r2(billStates(data.bills, data).filter((b) => b.status !== 'voided' && inRange(b.date, range.from, range.to)).reduce((s, b) => s + b.due, 0)), [data, range]);
+  const newCredit = useMemo(() => r2(billStates(data.bills, data).filter((b) => b.status !== 'voided' && !isOpeningBill(b) && inRange(b.date, range.from, range.to)).reduce((s, b) => s + b.due, 0)), [data, range]);
   const period = range.from && range.to ? `${fmtDate(range.from)} — ${fmtDate(range.to)}` : 'All time';
   const metrics = [
     { label: 'Total sales', value: now.sales, prev: prev?.sales, tone: '#1F2937' },

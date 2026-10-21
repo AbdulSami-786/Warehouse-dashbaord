@@ -6,7 +6,7 @@ import { useApp } from '../lib/AppContext.jsx';
 import {
   money, qty, r2, fmtDate, norm, rangeFor, rangeLabel, inRange,
 } from '../lib/format.js';
-import { billStates, collectedPayments, grossProfit } from '../lib/calc.js';
+import { billStates, collectedPayments, grossProfit, isOpeningBill } from '../lib/calc.js';
 import {
   SHOP, expensesMerged, locationSummary, salesByItem, salesByParty, stockEvents, stockMatrix,
 } from '../lib/reports.js';
@@ -49,7 +49,7 @@ export default function AllReports() {
 
   const kpi = useMemo(() => {
     const live = billStates(data.bills, data).filter((b) => b.status !== 'voided');
-    const inPeriod = live.filter((b) => inRange(b.date, range.from, range.to));
+    const inPeriod = live.filter((b) => !isOpeningBill(b) && inRange(b.date, range.from, range.to));
     const ids = new Set(inPeriod.map((b) => b.id));
     const spent = expenses.filter((e) => loc === 'all' || e.location === loc);
     const scope = loc === 'all' ? summary : summary.filter((s) => s.id === loc);

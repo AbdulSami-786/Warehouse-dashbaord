@@ -173,14 +173,14 @@ export function ItemCard() {
   const outQ = r2(rows.reduce((s, r) => s + r.outQty, 0));
   const toExcel = () => {
     exportCSV(`StockCard_${item.name}`, ['Date', 'Document', 'Type', 'Party / route', 'In', 'Out', 'Balance'],
-      rows.map((r) => [fmtDate(r.date), r.docNo, MOVE_TYPES[r.type]?.label, r.party, r.inQty || '', r.outQty || '', r.balance]),
+      rows.map((r) => [fmtDate(r.date), r.docNo, r.type === 'sale' ? 'Wholesale sale' : MOVE_TYPES[r.type]?.label, r.party, r.inQty || '', r.outQty || '', r.balance]),
       [`${settings.shopName} — Stock card: ${item.name}`, wh?.name || '', `Balance: ${qty(balance)} ${item.baseUnit}`]);
     toast('Stock card exported');
   };
   const toPDF = () => printReport({
     title: `Stock Card — ${item.name}`, subtitle: wh?.name || '', shopName: settings.shopName,
     headers: ['Date', 'Document', 'Type', 'Party / route', { label: 'In', align: 'r' }, { label: 'Out', align: 'r' }, { label: 'Balance', align: 'r' }],
-    rows: rows.map((r) => [fmtDate(r.date), r.docNo, MOVE_TYPES[r.type]?.label, r.party, r.inQty ? qty(r.inQty) : '—', r.outQty ? qty(r.outQty) : '—', qty(r.balance)]),
+    rows: rows.map((r) => [fmtDate(r.date), r.docNo, r.type === 'sale' ? 'Wholesale sale' : MOVE_TYPES[r.type]?.label, r.party, r.inQty ? qty(r.inQty) : '—', r.outQty ? qty(r.outQty) : '—', qty(r.balance)]),
     totals: ['', '', '', 'Totals', qty(inQ), qty(outQ), qty(balance)],
     meta: [`Unit: ${item.baseUnit}`],
   });
@@ -220,10 +220,10 @@ export function ItemCard() {
               <thead><tr><th>Date</th><th>Document</th><th>Type</th><th>Party / route</th><th className="r">In</th><th className="r">Out</th><th className="r">Balance</th></tr></thead>
               <tbody>
                 {[...rows].reverse().map((r) => (
-                  <tr key={r.id} className="clickable" onClick={() => navigate(`/warehouse/move/${r.moveId}`)}>
+                  <tr key={r.id} className="clickable" onClick={() => navigate(r.type === 'sale' ? `/bill/${r.billId}` : `/warehouse/move/${r.moveId}`)}>
                     <td className="nowrap">{fmtDate(r.date)}</td>
                     <td style={{ fontWeight: 600 }}>{r.docNo}</td>
-                    <td><Pill status={MOVE_TYPES[r.type]?.tone} label={MOVE_TYPES[r.type]?.label} /></td>
+                    <td>{r.type === 'sale' ? <Pill status="due" label="Wholesale sale" /> : <Pill status={MOVE_TYPES[r.type]?.tone} label={MOVE_TYPES[r.type]?.label} />}</td>
                     <td className="small">{r.party || '—'}</td>
                     <td className="r num" style={{ color: 'var(--success)' }}>{r.inQty ? `+${qty(r.inQty)}` : ''}</td>
                     <td className="r num" style={{ color: 'var(--danger)' }}>{r.outQty ? `−${qty(r.outQty)}` : ''}</td>

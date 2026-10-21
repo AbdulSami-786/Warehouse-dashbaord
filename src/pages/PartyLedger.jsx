@@ -8,7 +8,7 @@ import { useApp } from '../lib/AppContext.jsx';
 import { api } from '../lib/api.js';
 import { money, r2, fmtDate, BUCKET_META, whatsappUrl } from '../lib/format.js';
 import {
-  billStates, partyCredit, advanceAvailable, partyPendingCheques, reorderSuggestion, combinedPartyLedger,
+  billStates, isOpeningBill, partyCredit, advanceAvailable, partyPendingCheques, reorderSuggestion, combinedPartyLedger,
   ledgerFilterMatch, LEDGER_FILTERS, supplierForParty, supplierBalance, SYSTEM_METHODS,
 } from '../lib/calc.js';
 import { exportCSV, printReport, billPDF, raw, esc } from '../lib/exporters.js';
@@ -17,6 +17,7 @@ import {
   ActionSheet, Button, Card, Confirm, Empty, Money, PageHead, Pill, Stat,
 } from '../components/ui.jsx';
 import { BillPreview, PaymentModal, ReturnModal } from '../components/forms.jsx';
+import PartyJournal from '../components/PartyJournal.jsx';
 import {
   AdvanceModal, EditPaymentModal, PartyLockModal, PartyPricesModal, SetOffModal, SettlePartyModal, ShareLedgerModal,
   UnlockLedger,
@@ -73,6 +74,7 @@ function PartyLedger({ onRelock }) {
 
   const party = data.parties.find((p) => p.id === id);
   const supplier = supplierForParty(id, data.suppliers);
+  const journalCount = (data.journal || []).filter((e) => e.kind === 'party' && e.partyId === id).length;
   const states = useMemo(() => billStates(data.bills, data), [data]);
   const bills = useMemo(() => {
     const mine = states.filter((b) => b.partyId === id);
@@ -243,9 +245,11 @@ function PartyLedger({ onRelock }) {
         <div className="seg">
           <button className={view === 'statement' ? 'active' : ''} onClick={() => setView('statement')}>Full Statement</button>
           <button className={view === 'bills' ? 'active' : ''} onClick={() => setView('bills')}>Bills Only</button>
+          <button className={view === 'journal' ? 'active' : ''} onClick={() => setView('journal')}>Journal{journalCount ? ` (${journalCount})` : ''}</button>
         </div>
         <span className="small muted">
-          {view === 'statement'
+          {view === 'journal' ? 'Your own notes with any fields you choose — separate from bills and payments'
+            : view === 'statement'
             ? supplier ? 'Sales and purchases together, with one running balance — below zero means you owe them' : 'Every bill, payment and return as its own entry, with a running balance'
             : 'One row per bill'}
         </span>
@@ -360,6 +364,8 @@ function PartyLedger({ onRelock }) {
         </Card>
       )}
 
+      {view === 'journal' && <PartyJournal kind="party" party={party} />}
+
       {view === 'bills' && (
         <Card title="Bills" subtitle="Due and partly paid bills are shown first" tight>
           {bills.length ? (
@@ -400,7 +406,7 @@ function PartyLedger({ onRelock }) {
                             <td onClick={(e) => e.stopPropagation()}>
                               <div className="row-actions">
                                 {b.due > 0 && b.status !== 'voided' && <button className="btn btn-primary btn-sm" onClick={() => setPayBill(b)}>Pay</button>}
-                                {b.status !== 'voided' && (
+                                {b.status !== 'voided' && !isOpeningBill(b) && (
                                   <>
                                     <button className="btn btn-ghost btn-sm" title="Add return" onClick={() => setReturnBill(b)}><RotateCcw size={14} /></button>
                                     <button className="btn btn-ghost btn-sm" title="Edit bill" onClick={() => navigate(`/bill/${b.id}/edit`)}><Pencil size={14} /></button>
@@ -616,7 +622,7 @@ function PartyLedger({ onRelock }) {
         items={sheetBill ? [
           { label: 'Open bill', icon: Receipt, onClick: () => navigate(`/bill/${sheetBill.id}`) },
           ...(sheetBill.due > 0 && sheetBill.status !== 'voided' ? [{ label: `Add payment (${money(sheetBill.due)} due)`, icon: Plus, onClick: () => setPayBill(sheetBill) }] : []),
-          ...(sheetBill.status !== 'voided' ? [
+          ...(sheetBill.status !== 'voided' && !isOpeningBill(sheetBill) ? [
             { label: 'Add return', icon: RotateCcw, onClick: () => setReturnBill(sheetBill) },
             { label: 'Edit bill', icon: Pencil, onClick: () => navigate(`/bill/${sheetBill.id}/edit`) },
             { label: 'Void bill', icon: Ban, danger: true, onClick: () => setVoidBill(sheetBill) },

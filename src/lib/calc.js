@@ -19,6 +19,13 @@ export function billTotals(lines, rule = 'nearest1') {
   return { subtotal, roundOff: r2(total - subtotal), total: r2(total) };
 }
 
+/**
+ * A party's balance brought forward from the paper books. It is stored as a
+ * bill with no items so it is collected, aged and shown like any other due,
+ * but it is not a sale: sales, bill counts and reorder gaps skip it.
+ */
+export const isOpeningBill = (bill) => !!bill?.isOpening && String(bill.isOpening) !== 'false';
+
 export function billReturned(billId, returns = []) {
   return r2(returns.filter((r) => r.billId === billId).reduce((s, r) => s + (Number(r.valueAdjusted) || 0), 0));
 }
@@ -227,7 +234,7 @@ export function advanceAvailable(partyId, partyAdvances = []) {
 /** Is this party past their own usual gap between orders? */
 export function reorderSuggestion(partyId, bills = []) {
   const dates = bills
-    .filter((b) => b.partyId === partyId && b.status !== 'voided')
+    .filter((b) => b.partyId === partyId && b.status !== 'voided' && !isOpeningBill(b))
     .map((b) => new Date(b.date))
     .filter((d) => !isNaN(d))
     .sort((a, b) => a - b);
@@ -258,7 +265,8 @@ export function itemStock(itemId, {
   const sum = (rows) => rows.reduce((s, x) => s + (Number(x.qty) || 0), 0);
   const bought = receivedQty(purchases.filter((p) => p.itemId === itemId && !voidedPurchases.has(p.purchaseBillId)));
   const sentBack = sum(supplierReturns.filter((r) => r.itemId === itemId));
-  const sold = sum(billItems.filter((l) => l.itemId === itemId && !voidedBills.has(l.billId)));
+  // A line sold out of a warehouse is taken off that warehouse, not off the shop.
+  const sold = sum(billItems.filter((l) => l.itemId === itemId && !l.warehouseId && !voidedBills.has(l.billId)));
   const restocked = sum(returns.filter((r) => r.itemId === itemId && r.restock));
   const lost = sum(stockLoss.filter((l) => l.itemId === itemId));
   const shop = shopWarehouseFlow(itemId, { whMoves, whMoveLines });
@@ -487,7 +495,7 @@ export function periodSummary(data, from, to) {
     const x = new Date(d);
     return (!from || x >= new Date(from)) && (!to || x <= new Date(to + 'T23:59:59'));
   };
-  const live = bills.filter((b) => b.status !== 'voided' && within(b.date));
+  const live = bills.filter((b) => b.status !== 'voided' && !isOpeningBill(b) && within(b.date));
   const states = billStates(live, data);
   const ids = new Set(live.map((b) => b.id));
   const sales = r2(states.reduce((s, b) => s + b.net, 0));
@@ -521,7 +529,7 @@ export function ledgerBook(data, partyId = null, from = null, to = null) {
     .filter((b) => b.status !== 'voided' && (!partyId || b.partyId === partyId) && within(b.date))
     .forEach((b) => rows.push({
       date: b.date, ref: b.billNo, party: nameOf(b.partyId), partyId: b.partyId,
-      desc: `Sale — Bill ${b.billNo}`, debit: r2(b.totalAmount), credit: 0,
+      desc: isOpeningBill(b) ? 'Opening balance' : `Sale — Bill ${b.billNo}`, debit: r2(b.totalAmount), credit: 0,
     }));
   payments
     .filter((p) => !p.reversed && !p.isOpening && (!partyId || p.partyId === partyId) && within(p.date))
@@ -674,9 +682,12 @@ export function partyLedger(partyId, data = {}, from = null, to = null) {
       });
       return;
     }
+    const opening = isOpeningBill(b);
     rows.push({
       id: `bill-${b.id}`, date: b.date, type: 'bill', billId: b.id, ref: b.billNo,
-      title: `Bill ${b.billNo}`, detail, method: '', debit: r2(b.totalAmount), credit: 0,
+      title: opening ? 'Opening balance' : `Bill ${b.billNo}`,
+      detail: opening ? b.note || 'Balance brought forward from the previous books' : detail,
+      method: '', debit: r2(b.totalAmount), credit: 0,
     });
   });
 
@@ -1029,7 +1040,9 @@ export function moveEffect(move, warehouseId) {
  * Stock of every item in every warehouse, in one pass:
  * Map<warehouseId, Map<itemId, qty>>.
  */
-export function warehouseStockMap({ warehouses = [], whMoves = [], whMoveLines = [] } = {}) {
+export function warehouseStockMap({
+  warehouses = [], whMoves = [], whMoveLines = [], bills = [], billItems = [],
+} = {}) {
   const out = new Map(warehouses.map((w) => [w.id, new Map()]));
   const moves = new Map(whMoves.map((m) => [m.id, m]));
   const bump = (wid, itemId, q) => {
@@ -1048,6 +1061,11 @@ export function warehouseStockMap({ warehouses = [], whMoves = [], whMoveLines =
     } else {
       bump(m.warehouseId, l.itemId, (MOVE_TYPES[m.type]?.sign || 0) * q);
     }
+  });
+  // Wholesale bill lines that are sent from a warehouse.
+  const voided = new Set(bills.filter((b) => b.status === 'voided').map((b) => b.id));
+  billItems.forEach((l) => {
+    if (l.warehouseId && !voided.has(l.billId)) bump(l.warehouseId, l.itemId, -(Number(l.qty) || 0));
   });
   return out;
 }
@@ -1072,7 +1090,9 @@ export function warehouseStockValue(data = {}, warehouseId = null) {
 
 /** Item-by-item card for one warehouse: every movement with a running balance. */
 export function warehouseItemCard(warehouseId, itemId, data = {}, from = null, to = null) {
-  const { whMoves = [], whMoveLines = [], warehouses = [] } = data;
+  const {
+    whMoves = [], whMoveLines = [], warehouses = [], bills = [], billItems = [], parties = [],
+  } = data;
   const moves = new Map(whMoves.map((m) => [m.id, m]));
   const whName = (id) => warehouses.find((w) => w.id === id)?.name || 'Warehouse';
   const rows = [];
@@ -1089,6 +1109,17 @@ export function warehouseItemCard(warehouseId, itemId, data = {}, from = null, t
     rows.push({
       id: l.id, moveId: m.id, date: m.date, docNo: m.docNo, type: m.type, party,
       inQty: sign > 0 ? q : 0, outQty: sign < 0 ? q : 0, unit: l.unit || '', note: m.note || '',
+    });
+  });
+  const billById = new Map(bills.map((b) => [b.id, b]));
+  billItems.forEach((l) => {
+    if (l.itemId !== itemId || l.warehouseId !== warehouseId) return;
+    const b = billById.get(l.billId);
+    if (!b || b.status === 'voided') return;
+    rows.push({
+      id: l.id, moveId: '', billId: b.id, date: dayOf(b.date), docNo: b.billNo, type: 'sale',
+      party: parties.find((p) => p.id === b.partyId)?.name || '',
+      inQty: 0, outQty: Number(l.qty) || 0, unit: l.unit || '', note: 'Wholesale bill',
     });
   });
   rows.sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.docNo).localeCompare(String(b.docNo)));

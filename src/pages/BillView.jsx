@@ -1,17 +1,21 @@
 import { useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
-  ArrowLeft, Ban, FileDown, ListChecks, PackageOpen, Pencil, Plus, Printer, Receipt, RotateCcw, Send, Truck, Undo2,
+  ArrowLeft, Ban, FileDown, ListChecks, PackageOpen, Pencil, Plus, Printer, Receipt, RotateCcw, Send, Truck, Undo2, Warehouse,
 } from 'lucide-react';
 import { useApp } from '../lib/AppContext.jsx';
 import { api } from '../lib/api.js';
-import { money, fmtDate, fmtDateTime, qtySummary, whatsappUrl } from '../lib/format.js';
-import { billStates, deliveryProgress, lineDelivered } from '../lib/calc.js';
+import { money, r2, fmtDate, fmtDateTime, qtySummary, whatsappUrl } from '../lib/format.js';
+import {
+  billStates, deliveryProgress, isOpeningBill, lineDelivered, warehouseStockMap,
+} from '../lib/calc.js';
 import { billPDF, printBill } from '../lib/exporters.js';
 import {
   Button, Card, Empty, Field, Input, Modal, Money, PageHead, Pill,
 } from '../components/ui.jsx';
-import { LineProgressModal, PaymentModal, ProgressCount, ReturnModal } from '../components/forms.jsx';
+import {
+  LineProgressModal, PaymentModal, ProgressCount, ReturnModal, WarehouseDeliveryModal,
+} from '../components/forms.jsx';
 
 function SumRow({ label, value, strong }) {
   return (
@@ -35,6 +39,7 @@ export default function BillView() {
   const [payOpen, setPayOpen] = useState(false);
   const [retOpen, setRetOpen] = useState(false);
   const [dlvOpen, setDlvOpen] = useState(false);
+  const [whDlvOpen, setWhDlvOpen] = useState(false);
   const [voidOpen, setVoidOpen] = useState(false);
   const [voidReason, setVoidReason] = useState('');
   const [reversing, setReversing] = useState(null);
@@ -48,6 +53,8 @@ export default function BillView() {
     ...l, itemName: data.items.find((i) => i.id === l.itemId)?.name || 'Item', delivered: lineDelivered(l, bill),
   })) : []), [bill, data.billItems, data.items]);
   const progress = useMemo(() => deliveryProgress(bill, data.billItems), [bill, data.billItems]);
+  const warehouses = useMemo(() => (data.warehouses || []).filter((w) => w.status !== 'archived'), [data.warehouses]);
+  const whStock = useMemo(() => warehouseStockMap(data), [data]);
   const payments = useMemo(() => (bill ? data.payments.filter((p) => p.billId === bill.id) : []), [bill, data.payments]);
   const returns = useMemo(() => (bill ? data.returns.filter((r) => r.billId === bill.id) : []), [bill, data.returns]);
   // By payment, not by bill: an account payment's cheque is written with no
@@ -87,6 +94,10 @@ export default function BillView() {
     }
   };
   const saveLines = (changes) => mutate(() => api.setLineDelivery(bill.id, changes.map((c) => ({ id: c.id, deliveredQty: c.qty }))), 'Delivery updated');
+  const saveFromWarehouse = (warehouseId, changes) => mutate(
+    () => api.deliverFromWarehouse(bill.id, warehouseId, changes),
+    `Delivered from ${warehouses.find((w) => w.id === warehouseId)?.name || 'warehouse'}`,
+  );
   const doReverse = async () => {
     const p = reversing;
     setReversing(null);
@@ -107,13 +118,20 @@ export default function BillView() {
         {party?.phone && <a className="btn" href={whatsappUrl(party.phone, waText)} target="_blank" rel="noreferrer"><Send size={15} /> WhatsApp</a>}
         {open && (
           <>
-            <Button icon={ListChecks} onClick={() => setDlvOpen(true)}>Delivery</Button>
-            {progress.state !== 'delivered'
-              ? <Button variant="primary" icon={Truck} loading={busy} onClick={() => setDelivery('delivered')}>Mark All Delivered</Button>
-              : <Button icon={PackageOpen} loading={busy} onClick={() => setDelivery('pending')}>Mark Pending</Button>}
-            <Button icon={RotateCcw} onClick={() => setRetOpen(true)}>Return</Button>
-            <Button icon={Pencil} onClick={() => navigate(`/bill/${bill.id}/edit`)}>Edit</Button>
-            <Button icon={Ban} onClick={() => setVoidOpen(true)}>Void</Button>
+            {!isOpeningBill(bill) && (
+              <>
+                <Button icon={ListChecks} onClick={() => setDlvOpen(true)}>Delivery</Button>
+                {progress.state !== 'delivered'
+                  ? <Button variant="primary" icon={Truck} loading={busy} onClick={() => setDelivery('delivered')}>Mark All Delivered</Button>
+                  : <Button icon={PackageOpen} loading={busy} onClick={() => setDelivery('pending')}>Mark Pending</Button>}
+                {progress.state !== 'delivered' && warehouses.length > 0 && (
+                  <Button icon={Warehouse} onClick={() => setWhDlvOpen(true)}>Deliver from Warehouse</Button>
+                )}
+                <Button icon={RotateCcw} onClick={() => setRetOpen(true)}>Return</Button>
+                <Button icon={Pencil} onClick={() => navigate(`/bill/${bill.id}/edit`)}>Edit</Button>
+                <Button icon={Ban} onClick={() => setVoidOpen(true)}>Void</Button>
+              </>
+            )}
             {state.due > 0 && <Button variant="primary" icon={Plus} onClick={() => setPayOpen(true)}>Add Payment</Button>}
           </>
         )}
@@ -297,6 +315,17 @@ export default function BillView() {
         verb="Delivered"
         lines={lines.map((l) => ({ id: l.id, name: l.itemName, qty: Number(l.qty) || 0, unit: l.unit, done: l.delivered }))}
         onSave={saveLines}
+      />
+      <WarehouseDeliveryModal
+        open={whDlvOpen}
+        onClose={() => setWhDlvOpen(false)}
+        title={`Deliver from warehouse — Bill ${bill.billNo}`}
+        warehouses={warehouses}
+        stockOf={(wid, itemId) => whStock.get(wid)?.get(itemId) || 0}
+        lines={lines.filter((l) => l.qty - l.delivered > 0.0001).map((l) => ({
+          id: l.id, itemId: l.itemId, name: l.itemName, unit: l.unit, left: r2(l.qty - l.delivered), warehouseId: l.warehouseId || '',
+        }))}
+        onSave={saveFromWarehouse}
       />
       <Modal
         open={voidOpen}

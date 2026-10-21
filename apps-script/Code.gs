@@ -33,11 +33,16 @@ var SCHEMA = {
   // reassign every value after it on every existing row.
   Bills: ['id', 'billNo', 'partyId', 'date', 'subtotal', 'roundOff', 'totalAmount',
           'status', 'dueDate', 'note', 'createdAt', 'voidReason', 'voidedAt',
-          'delivery', 'deliveredAt'],
+          'delivery', 'deliveredAt',
+          // isOpening appended: a party's balance brought forward from the paper
+          // books. A bill with no items; it is collected like a due, never a sale.
+          'isOpening'],
   // deliveredQty appended: how much of the line has gone out to the customer.
   // Blank on older rows, which then follow the bill's own delivery flag.
+  // warehouseId appended: the warehouse this line is sent from. Blank means the
+  // shop; a warehouse line comes off that warehouse's stock, not the shop's.
   BillItems: ['id', 'billId', 'itemId', 'qty', 'unit', 'price', 'costPriceAtSale', 'lineTotal',
-              'deliveredQty'],
+              'deliveredQty', 'warehouseId'],
   // groupId appended: the parts of one account payment spread over several
   // bills share it, so the ledger can show them as one entry.
   Payments: ['id', 'billId', 'partyId', 'method', 'amount', 'date', 'note', 'reversed',
@@ -91,6 +96,11 @@ var SCHEMA = {
   // direction: 'paid' = we paid the party, 'received' = the party paid us.
   WhPartyPayments: ['id', 'partyId', 'direction', 'amount', 'date', 'method', 'note', 'createdAt',
                     'createdBy'],
+  // A free-form diary kept on a ledger: a shop party, a supplier or a warehouse
+  // party (kind: 'party' | 'supplier' | 'whParty', partyId: that record's id).
+  // Touches no stock, payment or balance. `fields` is a JSON list of
+  // {label, value} pairs the user makes up.
+  Journal: ['id', 'kind', 'partyId', 'date', 'title', 'fields', 'createdAt', 'createdBy', 'updatedAt'],
   ActivityLog: ['id', 'entityType', 'entityId', 'action', 'description', 'oldValue',
                 'newValue', 'user', 'timestamp'],
   // pages/status/name/createdAt appended: which screens a user may open (a JSON
@@ -128,7 +138,8 @@ var TAB_TO_KEY = {
   WarehouseMoveLines: 'whMoveLines',
   WarehouseExpenses: 'whExpenses',
   WhParties: 'whParties',
-  WhPartyPayments: 'whPartyPayments'
+  WhPartyPayments: 'whPartyPayments',
+  Journal: 'journal'
 };
 
 /** Columns stored as numbers. */
@@ -205,7 +216,7 @@ var REPLAY_GUARDED = {
   setOffParty: 1,
   saveWarehouse: 1, saveWhMove: 1, saveWhExpense: 1,
   saveStockCount: 1, importBatch: 1, saveUser: 1,
-  saveWhParty: 1, addWhPartyPayment: 1
+  saveWhParty: 1, addWhPartyPayment: 1, deliverFromWarehouse: 1, saveJournal: 1
 };
 
 /** How long a completed request's result stays replayable, in seconds. */
@@ -359,6 +370,7 @@ function dispatch(action, p, token) {
     case 'voidBill':         return voidBill(p);
     case 'setDelivery':      return setDelivery(p);
     case 'setLineDelivery':  return setLineDelivery(p);
+    case 'deliverFromWarehouse': return deliverFromWarehouse(p);
 
     case 'addPayment':       return addPayment(p);
     case 'reversePayment':   return reversePayment(p);
@@ -406,6 +418,9 @@ function dispatch(action, p, token) {
     case 'fullBackup':       return bootstrap();
 
     case 'syncPush':         return syncPush(p);
+
+    case 'saveJournal':      return saveJournal(p);
+    case 'deleteJournal':    return deleteJournal(p);
 
     case 'saveWarehouse':    return saveWarehouse(p);
     case 'archiveWarehouse': return toggleArchive('Warehouses', p.id, 'warehouse');
@@ -463,6 +478,7 @@ var ACTION_PAGES = {
   archiveItem: ['items'],
   saveBill: ['newBill', 'bills'],
   voidBill: ['bills', 'parties'], setDelivery: ['bills', 'parties'], setLineDelivery: ['bills', 'parties'],
+  deliverFromWarehouse: ['bills', 'parties'],
   addPayment: ['bills', 'parties', 'outstanding'],
   reversePayment: ['bills', 'parties'], deletePayment: ['parties'], updatePayment: ['parties'],
   settleParty: ['parties', 'outstanding'],
@@ -479,6 +495,7 @@ var ACTION_PAGES = {
   saveEmployee: ['employees'], addEmployeeTx: ['employees'],
   saveExpense: ['expenses'], saveStockLoss: ['stockLoss'], saveAsset: ['assets'],
   saveSettings: ['settings'],
+  saveJournal: ['parties', 'suppliers', 'whParties'], deleteJournal: ['parties', 'suppliers', 'whParties'],
   saveWarehouse: ['warehouses'], archiveWarehouse: ['warehouses'],
   saveWhMove: ['whMoves'], voidWhMove: ['whMoves'], saveStockCount: ['whCount'],
   saveWhExpense: ['whExpenses'], deleteWhExpense: ['whExpenses'],
@@ -1142,6 +1159,9 @@ function validateBillLines(lines, itemById) {
     if (!itemById[l.itemId]) {
       fail('Line ' + (i + 1) + ': item not found');
     }
+    if (l.warehouseId && !getById('Warehouses', l.warehouseId)) {
+      fail('Line ' + (i + 1) + ': warehouse not found');
+    }
   });
 }
 
@@ -1714,7 +1734,7 @@ function syncPush(p) {
     'EmployeeTransactions', 'Expenses', 'StockLoss',
     'SupplierPayments', 'SupplierReturns',
     'Warehouses', 'WhParties', 'WarehouseMoves', 'WarehouseMoveLines', 'WarehouseExpenses',
-    'WhPartyPayments', 'ActivityLog'
+    'WhPartyPayments', 'Journal', 'ActivityLog'
   ];
 
   return withLock(function () {
@@ -1922,9 +1942,17 @@ function saveParty(p) {
 
     var settings = readSettings();
 
+    // The balance from the paper books lives on a bill of its own.
+    var opening = null;
+    if (p.openingBalance !== undefined) {
+      opening = r2(p.openingBalance === '' || p.openingBalance === null ? 0 : Number(p.openingBalance));
+      if (!isFinite(opening) || opening < 0) fail('Opening balance must be zero or more');
+    }
+
     if (p.id) {
       var existing = getById('Parties', p.id);
       if (!existing) fail('Party not found');
+      if (opening !== null) assertOpeningBill(p.id, opening);
       var patch = {
         name: String(p.name).trim(),
         phone: p.phone || '',
@@ -1933,6 +1961,7 @@ function saveParty(p) {
         defaultDueDays: Number(p.defaultDueDays) || settings.defaultCreditDays
       };
       updateRow('Parties', existing._row, patch);
+      if (opening !== null) writeOpeningBill(p.id, opening, p.openingDate);
       logActivity('party', p.id, 'edit', 'Edited party "' + patch.name + '"', existing, patch);
       return getById('Parties', p.id);
     }
@@ -1948,9 +1977,62 @@ function saveParty(p) {
       createdAt: nowISO()
     };
     appendRow('Parties', rec);
-    logActivity('party', rec.id, 'create', 'Added party "' + rec.name + '"');
+    if (opening) writeOpeningBill(rec.id, opening, p.openingDate);
+    logActivity('party', rec.id, 'create', 'Added party "' + rec.name + '"' +
+      (opening ? ' with opening balance ' + opening : ''));
     return rec;
   });
+}
+
+function isOpeningBill(bill) {
+  return !!bill && String(bill.isOpening).toLowerCase() === 'true';
+}
+
+function openingBillOf(partyId) {
+  var bills = readAll('Bills');
+  for (var i = 0; i < bills.length; i++) {
+    if (bills[i].partyId === partyId && isOpeningBill(bills[i]) && bills[i].status !== 'voided') return bills[i];
+  }
+  return null;
+}
+
+/** Refuse a change that would leave the opening bill with less than has already been paid against it. */
+function assertOpeningBill(partyId, amount) {
+  var bill = openingBillOf(partyId);
+  if (!bill) return;
+  var book = dueBook();
+  var covered = r2(book.paid(bill.id) + book.returned(bill.id));
+  if (covered > amount + 0.004) {
+    fail(amount > 0
+      ? covered.toFixed(2) + ' has already been received against the opening balance, so it cannot be set below that. Reverse a payment first.'
+      : 'Payments are already recorded against the opening balance, so it cannot be removed. Reverse them first.');
+  }
+}
+
+/** Create, change or cancel the bill that carries a party's previous balance. */
+function writeOpeningBill(partyId, amount, date) {
+  var bill = openingBillOf(partyId);
+  var on = String(date || '').slice(0, 10);
+  if (bill) {
+    var patch = amount > 0
+      ? { subtotal: amount, roundOff: 0, totalAmount: amount, date: on || bill.date, dueDate: on || bill.date }
+      : { status: 'voided', voidReason: 'Opening balance removed', voidedAt: nowISO() };
+    updateRow('Bills', bill._row, patch);
+    logActivity('bill', bill.id, 'edit',
+      amount > 0 ? 'Opening balance changed to ' + amount : 'Opening balance removed', bill, patch);
+    return;
+  }
+  if (!(amount > 0)) return;
+  var day = on || todayISO();
+  var count = readAll('Bills').filter(isOpeningBill).length + 1;
+  var rec = {
+    id: uid('bil'), billNo: 'OB-' + ('0000' + count).slice(-4), partyId: partyId, date: day,
+    subtotal: amount, roundOff: 0, totalAmount: amount, status: 'due', dueDate: day,
+    note: 'Balance brought forward from the previous books', createdAt: nowISO(),
+    delivery: 'delivered', isOpening: true
+  };
+  appendRow('Bills', rec);
+  logActivity('bill', rec.id, 'create', 'Opening balance ' + amount);
 }
 
 /**
@@ -2154,6 +2236,8 @@ function saveBill(p) {
       }
     }
 
+    assertBillWarehouseStock(p.lines, p.id);
+
     // Money taken with the bill. Paying more than the bill is worth would leave
     // the extra attached to a bill that cannot absorb it.
     var payTotal = 0;
@@ -2279,7 +2363,8 @@ function saveBill(p) {
           ? l.costPriceAtSale
           : (costBefore[l.itemId] !== undefined && costBefore[l.itemId] !== '' ? costBefore[l.itemId] : (item.costPrice || 0))),
         lineTotal: r2((Number(l.qty) || 0) * (Number(l.price) || 0)),
-        deliveredQty: r2(delivered)
+        deliveredQty: r2(delivered),
+        warehouseId: l.warehouseId || ''
       });
 
       // Remember this party's price for this item (source for FR-3 auto-fill)
@@ -2527,6 +2612,82 @@ function setLineDelivery(p) {
     lines.forEach(function (l) { sent += lineDeliveredQty(l, bill); total += Number(l.qty) || 0; });
     logActivity('bill', bill.id, 'edit',
       'Bill ' + bill.billNo + ' delivery updated: ' + r2(sent) + ' of ' + r2(total) + ' delivered');
+    return getById('Bills', bill.id);
+  });
+}
+
+/**
+ * Hand over goods from a warehouse. The quantity delivered comes off that
+ * warehouse's stock: a line sent from elsewhere is split, and the delivered
+ * part becomes its own line against the warehouse. The bill total is
+ * unchanged. Mirror of deliverFromWarehouse in src/lib/localAdapter.js.
+ */
+function deliverFromWarehouse(p) {
+  return withLock(function () {
+    var bill = getById('Bills', p.billId);
+    if (!bill) fail('Bill not found');
+    if (bill.status === 'voided') fail('A voided bill cannot be delivered');
+    var wh = getById('Warehouses', p.warehouseId);
+    if (!wh) fail('Select a warehouse');
+    if (wh.status === 'archived') fail('Warehouse "' + wh.name + '" is archived. Restore it first.');
+    var changes = (p.lines || []).filter(function (c) { return Number(c.qty) > 0; });
+    if (!changes.length) fail('Nothing to deliver');
+
+    var byId = {};
+    readAll('BillItems').forEach(function (x) { if (x.billId === bill.id) byId[x.id] = x; });
+    var stock = warehouseStock(wh.id);
+    var want = {};
+    var seen = {};
+    var plan = changes.map(function (c) {
+      var line = byId[c.id];
+      if (!line) fail('Bill line not found');
+      if (seen[line.id]) fail('A line was listed twice');
+      seen[line.id] = true;
+      var item = getById('Items', line.itemId);
+      var q = r2(Number(c.qty));
+      var left = r2((Number(line.qty) || 0) - lineDeliveredQty(line, bill));
+      if (!isFinite(q) || q > left + 0.0001) fail((item ? item.name : 'Item') + ': only ' + left + ' still to deliver');
+      // Goods already booked against this warehouse are already off its stock.
+      if ((line.warehouseId || '') !== wh.id) want[line.itemId] = r2((want[line.itemId] || 0) + q);
+      return [line, q];
+    });
+    for (var itemId in want) {
+      var have = stock[itemId] || 0;
+      if (want[itemId] > have + 0.0001) {
+        var it = getById('Items', itemId);
+        fail((it ? it.name : 'Item') + ': only ' + have + ' ' + (it ? it.baseUnit : '') +
+             ' in ' + wh.name + ', cannot deliver ' + want[itemId] + ' from it.');
+      }
+    }
+
+    var sent = 0;
+    plan.forEach(function (pair) {
+      var line = pair[0];
+      var q = pair[1];
+      var total = Number(line.qty) || 0;
+      var done = lineDeliveredQty(line, bill);
+      var price = Number(line.price) || 0;
+      var rowNum = findRow('BillItems', line.id);
+      sent = r2(sent + q);
+      if ((line.warehouseId || '') === wh.id) {
+        updateRow('BillItems', rowNum, { deliveredQty: r2(done + q) });
+        return;
+      }
+      if (done < 0.0001 && q >= total - 0.0001) {
+        updateRow('BillItems', rowNum, { warehouseId: wh.id, deliveredQty: r2(total) });
+        return;
+      }
+      updateRow('BillItems', rowNum, {
+        qty: r2(total - q), lineTotal: r2((total - q) * price), deliveredQty: r2(done)
+      });
+      appendRow('BillItems', {
+        id: uid('bli'), billId: bill.id, itemId: line.itemId, qty: q, unit: line.unit,
+        price: line.price, costPriceAtSale: line.costPriceAtSale, lineTotal: r2(q * price),
+        deliveredQty: q, warehouseId: wh.id
+      });
+    });
+    syncBillDeliveryFlag(bill.id);
+    logActivity('bill', bill.id, 'edit', 'Bill ' + bill.billNo + ': ' + sent + ' delivered from ' + wh.name);
     return getById('Bills', bill.id);
   });
 }
@@ -3959,7 +4120,51 @@ function warehouseStock(warehouseId) {
     if (!sign) return;
     out[l.itemId] = r2((out[l.itemId] || 0) + sign * (Number(l.qty) || 0));
   });
+  // Wholesale bill lines sent from this warehouse.
+  var voidedBills = {};
+  readAll('Bills').forEach(function (b) { if (b.status === 'voided') voidedBills[b.id] = true; });
+  readAll('BillItems').forEach(function (l) {
+    if (l.warehouseId !== warehouseId || voidedBills[l.billId]) return;
+    out[l.itemId] = r2((out[l.itemId] || 0) - (Number(l.qty) || 0));
+  });
   return out;
+}
+
+/**
+ * Refuse a bill whose warehouse lines take more than the warehouse holds.
+ * A bill being edited gets back what it took before, since its old lines are
+ * replaced. Mirror of assertBillWarehouseStock in src/lib/localAdapter.js.
+ */
+function assertBillWarehouseStock(lines, ownBillId) {
+  var want = {};
+  lines.forEach(function (l) {
+    if (!l.warehouseId) return;
+    want[l.warehouseId] = want[l.warehouseId] || {};
+    want[l.warehouseId][l.itemId] = r2((want[l.warehouseId][l.itemId] || 0) + Number(l.qty));
+  });
+  var whIds = Object.keys(want);
+  if (!whIds.length) return;
+
+  var own = {};
+  if (ownBillId) {
+    readAll('BillItems').forEach(function (x) {
+      if (x.billId !== ownBillId || !x.warehouseId) return;
+      var k = x.warehouseId + '|' + x.itemId;
+      own[k] = r2((own[k] || 0) + (Number(x.qty) || 0));
+    });
+  }
+  whIds.forEach(function (whId) {
+    var stock = warehouseStock(whId);
+    for (var itemId in want[whId]) {
+      var have = r2((stock[itemId] || 0) + (own[whId + '|' + itemId] || 0));
+      if (want[whId][itemId] > have + 0.0001) {
+        var item = getById('Items', itemId);
+        var wh = getById('Warehouses', whId);
+        fail((item ? item.name : 'Item') + ': only ' + have + ' ' + (item ? item.baseUnit : '') +
+             ' in ' + (wh ? wh.name : 'the warehouse') + ', cannot sell ' + want[whId][itemId] + ' from it.');
+      }
+    }
+  });
 }
 
 /** Shop stock of one item. Mirror of itemStock in src/lib/calc.js. */
@@ -3977,7 +4182,8 @@ function shopStockOf(itemId) {
   var item = getById('Items', itemId);
   var opening = item ? Number(item.openingStock) || 0 : 0;
   var bought = sum(live(forItem(readAll('Purchases')), voidedIds('PurchaseBills'), 'purchaseBillId'), lineReceivedQty);
-  var sold = sum(live(forItem(readAll('BillItems')), voidedIds('Bills'), 'billId'));
+  // A line sent from a warehouse comes off that warehouse, not the shop.
+  var sold = sum(live(forItem(readAll('BillItems')).filter(function (l) { return !l.warehouseId; }), voidedIds('Bills'), 'billId'));
   var restocked = sum(forItem(readAll('Returns')).filter(function (r) { return r.restock === true || r.restock === 'TRUE' || r.restock === 'true' || r.restock === 1; }));
   var lost = sum(forItem(readAll('StockLoss')));
   var sentBack = sum(forItem(readAll('SupplierReturns')));
@@ -4411,6 +4617,62 @@ function sharedWarehouseLedger(party, settings) {
         return { id: x.id, direction: x.direction, amount: x.amount, date: x.date, method: x.method, note: x.note };
       })
   };
+}
+
+/* ==========================================================================
+   Journal
+   ========================================================================== */
+
+var JOURNAL_KINDS = { party: 'Parties', supplier: 'Suppliers', whParty: 'WhParties' };
+
+/** A journal entry's fields: {label, value} pairs the user made up, blanks dropped. */
+function cleanJournalFields(list) {
+  if (typeof list === 'string') {
+    try { list = JSON.parse(list); } catch (e) { list = []; }
+  }
+  return (Array.isArray(list) ? list : []).map(function (f) {
+    return { label: String((f && f.label) || '').trim(), value: String((f && f.value) || '').trim() };
+  }).filter(function (f) { return f.label || f.value; });
+}
+
+function saveJournal(p) {
+  return withLock(function () {
+    var tab = JOURNAL_KINDS[p.kind];
+    if (!tab) fail('Unknown ledger type');
+    var owner = getById(tab, p.partyId);
+    if (!owner) fail('Party not found');
+    var fields = cleanJournalFields(p.fields);
+    var title = String(p.title || '').trim();
+    if (!title && !fields.length) fail('Write at least a title or one field');
+    var data = { date: p.date || todayISO(), title: title, fields: JSON.stringify(fields), updatedAt: nowISO() };
+
+    if (p.id) {
+      var existing = getById('Journal', p.id);
+      if (!existing) fail('Journal entry not found');
+      updateRow('Journal', existing._row, data);
+      logActivity('journal', p.id, 'edit', 'Edited journal entry — ' + owner.name);
+      return getById('Journal', p.id);
+    }
+    var rec = {
+      id: uid('jrn'), kind: p.kind, partyId: owner.id, date: data.date, title: data.title, fields: data.fields,
+      createdAt: nowISO(), createdBy: ACTING_USER, updatedAt: data.updatedAt
+    };
+    appendRow('Journal', rec);
+    logActivity('journal', rec.id, 'create', 'Added journal entry — ' + owner.name);
+    return rec;
+  });
+}
+
+function deleteJournal(p) {
+  return withLock(function () {
+    var rec = getById('Journal', p.id);
+    if (!rec) fail('Journal entry not found');
+    var tab = JOURNAL_KINDS[rec.kind];
+    var owner = tab ? getById(tab, rec.partyId) : null;
+    deleteRowById('Journal', p.id);
+    logActivity('journal', p.id, 'delete', 'Deleted journal entry' + (owner ? ' — ' + owner.name : ''), rec, null);
+    return { ok: true };
+  });
 }
 
 /* ==========================================================================

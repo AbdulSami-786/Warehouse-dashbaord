@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Download, Plus, RotateCcw, Search } from 'lucide-react';
 import { useApp } from '../lib/AppContext.jsx';
 import { money, r2, fmtDate, norm } from '../lib/format.js';
-import { billStates } from '../lib/calc.js';
+import { billStates, isOpeningBill } from '../lib/calc.js';
 import { exportCSV } from '../lib/exporters.js';
 import {
   Button, Card, Empty, Modal, Money, PageHead, Pill, SearchBox, Stat,
@@ -15,7 +15,7 @@ function PickBill({ open, onClose, onPick }) {
   const [q, setQ] = useState('');
   const bills = useMemo(() => {
     const s = norm(q);
-    return billStates(data.bills, data).filter((b) => b.status !== 'voided')
+    return billStates(data.bills, data).filter((b) => b.status !== 'voided' && !isOpeningBill(b))
       .map((b) => ({ ...b, partyName: data.parties.find((p) => p.id === b.partyId)?.name || '' }))
       .filter((b) => !s || norm(b.billNo).includes(s) || norm(b.partyName).includes(s))
       .sort((a, b) => new Date(b.date) - new Date(a.date))

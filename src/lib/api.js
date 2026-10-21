@@ -27,6 +27,7 @@ export const api = {
   voidBill: (id, reason) => call('voidBill', { id, reason }),
   setDelivery: (id, delivery) => call('setDelivery', { id, delivery }),
   setLineDelivery: (billId, lines) => call('setLineDelivery', { billId, lines }),
+  deliverFromWarehouse: (billId, warehouseId, lines) => call('deliverFromWarehouse', { billId, warehouseId, lines }),
 
   addPayment: (p) => call('addPayment', p),
   reversePayment: (id, reason) => call('reversePayment', { id, reason }),
@@ -65,6 +66,9 @@ export const api = {
   saveExpense: (p) => call('saveExpense', p),
   saveStockLoss: (p) => call('saveStockLoss', p),
   saveAsset: (p) => call('saveAsset', p),
+
+  saveJournal: (p) => call('saveJournal', p),
+  deleteJournal: (id) => call('deleteJournal', { id }),
 
   saveSettings: (p) => call('saveSettings', p),
 

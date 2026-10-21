@@ -9,7 +9,7 @@ import {
   money, r2, today, addDays, fmtDate, phoneKey, uid, qtySummary, whatsappUrl,
 } from '../lib/format.js';
 import {
-  billState, billStates, collectedPayments, payableNow, methodBalances,
+  billState, billStates, collectedPayments, isOpeningBill, payableNow, methodBalances,
 } from '../lib/calc.js';
 import { printReport } from '../lib/exporters.js';
 import {
@@ -51,12 +51,16 @@ export function ChequeFields({ value, onChange }) {
 
 export function PartyForm({ party = null, initialName = '', onSaved, onCancel }) {
   const { data, mutate, settings } = useApp();
+  // The balance carried over from the paper books sits on a bill of its own.
+  const openingBill = party ? (data?.bills || []).find((b) => b.partyId === party.id && isOpeningBill(b) && b.status !== 'voided') : null;
   const [f, setF] = useState({
     name: String(party?.name ?? initialName ?? ''),
     phone: String(party?.phone ?? ''),
     address: String(party?.address ?? ''),
     creditLimit: party?.creditLimit ?? '',
     defaultDueDays: party?.defaultDueDays ?? settings.defaultCreditDays,
+    openingBalance: openingBill ? openingBill.totalAmount : '',
+    openingDate: openingBill ? String(openingBill.date).slice(0, 10) : today(),
   });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -76,6 +80,7 @@ export function PartyForm({ party = null, initialName = '', onSaved, onCancel })
       const saved = await mutate(() => api.saveParty({
         id: party?.id, name: f.name.trim(), phone: f.phone.trim(), address: f.address.trim(),
         creditLimit: Number(f.creditLimit) || 0, defaultDueDays: Number(f.defaultDueDays) || settings.defaultCreditDays,
+        openingBalance: Number(f.openingBalance) || 0, openingDate: f.openingDate,
       }), party ? 'Party updated' : undefined);
       onSaved?.(saved);
     } catch { /* toasted */ } finally {
@@ -97,6 +102,12 @@ export function PartyForm({ party = null, initialName = '', onSaved, onCancel })
         </Field>
         <Field label="Default credit days" hint="Used to set each bill's due date">
           <Input type="number" min="0" value={f.defaultDueDays} onChange={set('defaultDueDays')} />
+        </Field>
+        <Field label="Opening balance" hint="What this party already owes you from your previous books — 0 if nothing">
+          <Input type="number" min="0" step="any" value={f.openingBalance} onChange={set('openingBalance')} placeholder="0" />
+        </Field>
+        <Field label="Balance as on" hint="The date of that balance">
+          <Input type="date" value={f.openingDate} onChange={set('openingDate')} />
         </Field>
         <Field label="Address" className="full">
           <Textarea value={f.address} onChange={set('address')} rows={2} placeholder="Shop address or area" />
@@ -640,6 +651,97 @@ export function LineProgressModal({ open, title, lines = [], verb = 'Delivered',
         })}
       </div>
       <div className="small muted mt-2">{fullCount} of {lines.length} item{lines.length === 1 ? '' : 's'} fully {verb.toLowerCase()}.</div>
+    </Modal>
+  );
+}
+
+/**
+ * Deliver what is still owing on a bill out of one warehouse. Each line shows
+ * how much that warehouse holds; the quantity typed comes off its stock.
+ * `lines` are the undelivered ones: { id, itemId, name, unit, left, warehouseId }.
+ */
+export function WarehouseDeliveryModal({ open, title, lines = [], warehouses = [], stockOf, onClose, onSave }) {
+  const [whId, setWhId] = useState('');
+  const [vals, setVals] = useState({});
+  const [busy, setBusy] = useState(false);
+
+  // Goods already booked against the chosen warehouse are off its stock already.
+  const availOf = (l, wid) => (l.warehouseId === wid ? l.left : stockOf(wid, l.itemId));
+  const suggest = (wid) => Object.fromEntries(lines.map((l) => [l.id, String(Math.max(0, r2(Math.min(l.left, availOf(l, wid)))))]));
+
+  useEffect(() => {
+    if (!open) return;
+    const first = warehouses[0]?.id || '';
+    setWhId(first);
+    setVals(suggest(first));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  const pickWarehouse = (wid) => { setWhId(wid); setVals(suggest(wid)); };
+  const qtyOf = (l) => Number(vals[l.id]) || 0;
+  const bad = (l) => {
+    const v = vals[l.id];
+    return v !== '' && v !== undefined && (!Number.isFinite(Number(v)) || Number(v) < 0 || Number(v) > l.left + 0.0001);
+  };
+  // Lines of one item share the warehouse's stock between them.
+  const drawn = new Map();
+  lines.forEach((l) => { if (l.warehouseId !== whId) drawn.set(l.itemId, r2((drawn.get(l.itemId) || 0) + qtyOf(l))); });
+  const short = (l) => l.warehouseId !== whId && qtyOf(l) > 0 && (drawn.get(l.itemId) || 0) > stockOf(whId, l.itemId) + 0.0001;
+  const invalid = lines.some((l) => bad(l) || short(l));
+  const picked = lines.filter((l) => qtyOf(l) > 0 && !bad(l));
+
+  const save = async () => {
+    if (busy || invalid || !picked.length || !whId) return;
+    setBusy(true);
+    try {
+      await onSave(whId, picked.map((l) => ({ id: l.id, qty: r2(qtyOf(l)) })));
+      onClose();
+    } catch { /* toasted */ } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      open={open}
+      title={title}
+      onClose={onClose}
+      footer={(
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button variant="primary" icon={Save} onClick={save} loading={busy} disabled={invalid || !picked.length || !whId}>
+            Deliver{picked.length ? ` ${picked.length} item${picked.length === 1 ? '' : 's'}` : ''}
+          </Button>
+        </>
+      )}
+    >
+      <Field label="Deliver from warehouse">
+        <Select value={whId} onChange={(e) => pickWarehouse(e.target.value)} options={warehouses.map((w) => ({ value: w.id, label: w.name }))} />
+      </Field>
+      <div className="small muted" style={{ margin: '4px 0 8px' }}>
+        Type how much goes out now. It is taken off this warehouse's stock and the bill total stays the same.
+      </div>
+      <div className="ld-lines">
+        {lines.map((l) => {
+          const have = availOf(l, whId);
+          return (
+            <div key={l.id} className="ld-line">
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <span className="ld-name">{l.name}</span>
+                <span className="small muted" style={{ display: 'block' }}>
+                  {l.left} {l.unit || ''} still to deliver · {l.warehouseId === whId ? 'already booked on this warehouse' : `${have} in warehouse`}
+                </span>
+              </div>
+              <label className="ld-qty">
+                <span className="small muted">Deliver</span>
+                <Input type="number" min="0" max={l.left} step="any" value={vals[l.id] ?? ''} onChange={(e) => setVals((v) => ({ ...v, [l.id]: e.target.value }))} aria-invalid={bad(l) || short(l)} />
+                {bad(l) && <span className="err small">0 to {l.left}</span>}
+                {!bad(l) && short(l) && <span className="err small">Only {stockOf(whId, l.itemId)} in stock</span>}
+              </label>
+            </div>
+          );
+        })}
+      </div>
     </Modal>
   );
 }

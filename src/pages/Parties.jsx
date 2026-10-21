@@ -6,7 +6,7 @@ import {
 import { useApp } from '../lib/AppContext.jsx';
 import { api } from '../lib/api.js';
 import { money, norm, whatsappUrl } from '../lib/format.js';
-import { billStates, partyDue, advanceAvailable } from '../lib/calc.js';
+import { billStates, isOpeningBill, partyDue, advanceAvailable } from '../lib/calc.js';
 import { canOpen, isLocked } from '../lib/partyLock.js';
 import {
   Button, Card, Confirm, Empty, Modal, PageHead, Pill, SearchBox,
@@ -32,7 +32,7 @@ export default function Parties() {
         ...p,
         due: partyDue(p.id, states),
         advance: advanceAvailable(p.id, data.partyAdvances),
-        billCount: data.bills.filter((b) => b.partyId === p.id && b.status !== 'voided').length,
+        billCount: data.bills.filter((b) => b.partyId === p.id && b.status !== 'voided' && !isOpeningBill(b)).length,
         hidden: !canOpen(p),
       }))
       .sort((a, b) => (b.hidden ? 0 : b.due) - (a.hidden ? 0 : a.due) || a.name.localeCompare(b.name));
