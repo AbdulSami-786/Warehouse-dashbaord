@@ -9,7 +9,7 @@ export const CONFIG = {
   defaultShopName: 'SGA Balloon Merchant',
 
   backend: 'sheets',
-  appsScriptUrl: 'https://script.google.com/macros/s/AKfycbwnCAgvLHJaKJPQwVrL-PkaHia6Cs5QHD7_4sMG6C6tF8otMbEMjF74T-MAtSEWCuSL/exec',
+  appsScriptUrl: 'https://script.google.com/macros/s/AKfycbyKMpX2ruok3iQJCwdTmbzv8i4y6Y6pbxpM-SpLaiedHNEdev_rkN4bSKRysrJNST4V/exec',
 
   // Where shared 
   // party-ledger links point. Blank means this same page, which

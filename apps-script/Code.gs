@@ -191,8 +191,16 @@ var BOOLEAN = { reversed: 1, restock: 1, active: 1, isAdvance: 1 };
    Web app entry points
    ========================================================================== */
 
+/**
+ * Which Code.gs this deployment is running. Open the Web App's /exec URL in a
+ * browser to read it: if it is lower than the file you pasted, the deployment
+ * was not updated (Deploy > Manage deployments > edit > New version > Deploy).
+ * Keep in step with package.json.
+ */
+var BACKEND_VERSION = '2.6.0';
+
 function doGet(e) {
-  return json({ ok: true, data: { status: 'SGA Balloon Merchant backend is running' } });
+  return json({ ok: true, data: { status: 'SGA Balloon Merchant backend is running', version: BACKEND_VERSION } });
 }
 
 // Who the current request is acting as, for the activity log. Set per request
@@ -446,7 +454,7 @@ function dispatch(action, p, token) {
     case 'importBatch':      return importBatch(p);
 
     // Safe to echo: the caller chose this string, so it reveals nothing.
-    default: fail('Unknown action: ' + action);
+    default: fail('Unknown action: ' + action + ' (backend v' + BACKEND_VERSION + ')');
   }
 }
 
