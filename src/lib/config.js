@@ -11,7 +11,8 @@ export const CONFIG = {
   backend: 'sheets',
   appsScriptUrl: 'https://script.google.com/macros/s/AKfycbwnCAgvLHJaKJPQwVrL-PkaHia6Cs5QHD7_4sMG6C6tF8otMbEMjF74T-MAtSEWCuSL/exec',
 
-  // Where shared party-ledger links point. Blank means this same page, which
+  // Where shared 
+  // party-ledger links point. Blank means this same page, which
   // is the only place the data exists while everything is stored locally.
   publicUrl: '',
 };
