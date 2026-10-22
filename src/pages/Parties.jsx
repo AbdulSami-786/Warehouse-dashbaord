@@ -5,8 +5,8 @@ import {
 } from 'lucide-react';
 import { useApp } from '../lib/AppContext.jsx';
 import { api } from '../lib/api.js';
-import { money, norm, whatsappUrl } from '../lib/format.js';
-import { billStates, isOpeningBill, partyDue, advanceAvailable } from '../lib/calc.js';
+import { money, norm, r2, whatsappUrl } from '../lib/format.js';
+import { billStates, isOpeningBill, partyDue, advanceAvailable, journalOwed } from '../lib/calc.js';
 import { canOpen, isLocked } from '../lib/partyLock.js';
 import {
   Button, Card, Confirm, Empty, Modal, PageHead, Pill, SearchBox,
@@ -30,8 +30,9 @@ export default function Parties() {
       .filter((p) => !s || norm(p.name).includes(s) || norm(p.phone).includes(s))
       .map((p) => ({
         ...p,
-        due: partyDue(p.id, states),
-        advance: advanceAvailable(p.id, data.partyAdvances),
+        // The journal's money to take counts as due, and what is to be given as credit held.
+        due: r2(partyDue(p.id, states) + Math.max(0, journalOwed('party', p.id, data))),
+        advance: r2(advanceAvailable(p.id, data.partyAdvances) + Math.max(0, -journalOwed('party', p.id, data))),
         billCount: data.bills.filter((b) => b.partyId === p.id && b.status !== 'voided' && !isOpeningBill(b)).length,
         hidden: !canOpen(p),
       }))

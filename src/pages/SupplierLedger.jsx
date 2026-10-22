@@ -9,7 +9,7 @@ import { api } from '../lib/api.js';
 import { money, r2, fmtDate, norm, rangeFor, nameKey } from '../lib/format.js';
 import {
   billStates, combinedSupplierLedger, ledgerFilterMatch, LEDGER_FILTERS, lineReceived, partyDue, purchaseLines,
-  receiptProgress, supplierBalance, supplierBillStates,
+  receiptProgress, supplierBalance, supplierBillStates, journalOwed,
 } from '../lib/calc.js';
 import { exportCSV, printReport } from '../lib/exporters.js';
 import {
@@ -151,7 +151,7 @@ export default function SupplierLedger() {
     meta: [`Date: ${fmtDate(b.date)}`, ...(b.invoiceNo ? [`Supplier invoice: ${b.invoiceNo}`] : []), `Paid: ${money(b.paid)}`, `Due: ${money(b.due)}`,
       ...(b.status === 'voided' ? ['CANCELLED'] : []), ...(b.note ? [`Note: ${b.note}`] : [])],
   });
-  const net = party ? r2(balance - partyDue(party.id, billStates(data.bills, data))) : 0;
+  const net = party ? r2(balance - partyDue(party.id, billStates(data.bills, data)) - journalOwed('party', party.id, data)) : 0;
 
   return (
     <>

@@ -203,7 +203,8 @@ are used (or by running `setup` again):
 | `WarehouseExpenses` | Rent, labour, loading and other running costs per warehouse |
 | `WhParties` | Warehouse parties — the factories, suppliers and customers goods come from and go to |
 | `WhPartyPayments` | Money paid to a warehouse party, or received from one |
-| `Journal` | Free-form notes on any party, supplier or warehouse party — a date, a title and fields the user names; no effect on stock, payments or balance |
+| `Journal` | Free-form notes on any party, supplier or warehouse party — a date, a title and fields the user names. A row can carry a payment; the total (to take or to give) joins that ledger's balance |
+| `JournalPayments` | Money collected on, or paid out of, a journal entry; it lowers what the entry still has to take or give and moves the chosen cash account |
 
 ### Warehouse parties and their khata
 

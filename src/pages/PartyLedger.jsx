@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
-  ArrowLeftRight, Ban, ChevronDown, ChevronRight, CircleCheck, Download, EllipsisVertical, HandCoins, KeyRound,
+  ArrowLeftRight, Ban, BookOpen, ChevronDown, ChevronRight, CircleCheck, Download, EllipsisVertical, HandCoins, KeyRound,
   Lock, Pencil, Phone, Plus, Printer, Receipt, RotateCcw, Search, Send, Share2, ShoppingCart, Trash2, Wallet,
 } from 'lucide-react';
 import { useApp } from '../lib/AppContext.jsx';
@@ -9,7 +9,7 @@ import { api } from '../lib/api.js';
 import { money, r2, fmtDate, BUCKET_META, whatsappUrl } from '../lib/format.js';
 import {
   billStates, isOpeningBill, partyCredit, advanceAvailable, partyPendingCheques, reorderSuggestion, combinedPartyLedger,
-  ledgerFilterMatch, LEDGER_FILTERS, supplierForParty, supplierBalance, SYSTEM_METHODS,
+  ledgerFilterMatch, LEDGER_FILTERS, supplierForParty, supplierBalance, SYSTEM_METHODS, journalOwed,
 } from '../lib/calc.js';
 import { exportCSV, printReport, billPDF, raw, esc } from '../lib/exporters.js';
 import { canOpen, isLocked, relock } from '../lib/partyLock.js';
@@ -94,7 +94,9 @@ function PartyLedger({ onRelock }) {
     };
   }, [bills, id, data]);
   const owedToThem = supplier ? supplierBalance(supplier.id, data) : 0;
-  const net = r2(totals.due - owedToThem);
+  // What the journal leaves open: above zero they owe us, below zero we owe them.
+  const journalBal = journalOwed('party', id, data);
+  const net = r2(totals.due + journalBal - owedToThem);
   const reorder = useMemo(() => reorderSuggestion(id, data.bills), [id, data.bills]);
   const ledger = useMemo(() => combinedPartyLedger(id, data), [id, data]);
   const shown = useMemo(() => ledger.filter((r) => ledgerFilterMatch(r, filter)), [ledger, filter]);
@@ -211,6 +213,17 @@ function PartyLedger({ onRelock }) {
           noteTone="#EA580C"
         />
         <Stat label="Advance Balance" value={money(totals.advance)} icon={Wallet} tone="#16A34A" />
+        {Math.abs(journalBal) > 0.004 && (
+          <Stat
+            label="Journal Balance"
+            value={money(Math.abs(journalBal))}
+            icon={BookOpen}
+            tone={journalBal > 0 ? '#DC2626' : '#B45309'}
+            note={journalBal > 0 ? 'To take, from the journal' : 'To give, from the journal'}
+            noteTone={journalBal > 0 ? '#DC2626' : '#B45309'}
+            onClick={() => setView('journal')}
+          />
+        )}
         {supplier && (
           <Stat
             label="You Owe Them (Purchases)"
@@ -221,7 +234,7 @@ function PartyLedger({ onRelock }) {
             note={owedToThem < -0.004 ? 'Paid ahead — they hold it as advance' : 'Tap for purchase khata'}
           />
         )}
-        {supplier && (
+        {(supplier || Math.abs(journalBal) > 0.004) && (
           <Stat label="Net Balance" value={money(Math.abs(net))} icon={ArrowLeftRight} tone={net > 0.004 ? '#DC2626' : '#16A34A'} note={netLabel} noteTone={net > 0.004 ? '#DC2626' : '#16A34A'} />
         )}
       </div>

@@ -20,7 +20,7 @@ const EMPTY = {
   cheques: [], partyAdvances: [], purchases: [], employees: [], employeeTx: [], expenses: [],
   stockLoss: [], assets: [], activityLog: [], partyLedgerLinks: [], suppliers: [], purchaseBills: [],
   supplierPayments: [], supplierReturns: [],
-  warehouses: [], whMoves: [], whMoveLines: [], whExpenses: [], whParties: [], whPartyPayments: [], journal: [],
+  warehouses: [], whMoves: [], whMoveLines: [], whExpenses: [], whParties: [], whPartyPayments: [], journal: [], journalPayments: [],
   settings: {
     shopName: 'SGA Balloon Merchant', phone: '', address: '', email: '', logoUrl: '',
     roundingRule: 'nearest1', priceAlertThreshold: 15, defaultCreditDays: 7, customMethods: [],

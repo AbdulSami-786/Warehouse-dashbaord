@@ -98,9 +98,16 @@ var SCHEMA = {
                     'createdBy'],
   // A free-form diary kept on a ledger: a shop party, a supplier or a warehouse
   // party (kind: 'party' | 'supplier' | 'whParty', partyId: that record's id).
-  // Touches no stock, payment or balance. `fields` is a JSON list of
-  // {label, value} pairs the user makes up.
-  Journal: ['id', 'kind', 'partyId', 'date', 'title', 'fields', 'createdAt', 'createdBy', 'updatedAt'],
+  // `fields` is a JSON list of {label, value, payment} rows the user makes up.
+  // The payments add up to `amount`; `direction` says whether the party will
+  // pay the shop ('take') or the shop will pay the party ('give'). An entry
+  // with an amount joins the ledger's balance; what is collected or paid
+  // against it is kept in JournalPayments.
+  Journal: ['id', 'kind', 'partyId', 'date', 'title', 'fields', 'createdAt', 'createdBy', 'updatedAt',
+            'direction', 'amount'],
+  // direction: 'in' = collected from the party, 'out' = paid to the party.
+  JournalPayments: ['id', 'journalId', 'kind', 'partyId', 'direction', 'amount', 'date', 'method', 'note',
+                    'createdAt', 'createdBy'],
   ActivityLog: ['id', 'entityType', 'entityId', 'action', 'description', 'oldValue',
                 'newValue', 'user', 'timestamp'],
   // pages/status/name/createdAt appended: which screens a user may open (a JSON
@@ -139,7 +146,8 @@ var TAB_TO_KEY = {
   WarehouseExpenses: 'whExpenses',
   WhParties: 'whParties',
   WhPartyPayments: 'whPartyPayments',
-  Journal: 'journal'
+  Journal: 'journal',
+  JournalPayments: 'journalPayments'
 };
 
 /** Columns stored as numbers. */
@@ -197,7 +205,7 @@ var BOOLEAN = { reversed: 1, restock: 1, active: 1, isAdvance: 1 };
  * was not updated (Deploy > Manage deployments > edit > New version > Deploy).
  * Keep in step with package.json.
  */
-var BACKEND_VERSION = '2.6.0';
+var BACKEND_VERSION = '2.7.0';
 
 function doGet(e) {
   return json({ ok: true, data: { status: 'SGA Balloon Merchant backend is running', version: BACKEND_VERSION } });
@@ -224,7 +232,7 @@ var REPLAY_GUARDED = {
   setOffParty: 1,
   saveWarehouse: 1, saveWhMove: 1, saveWhExpense: 1,
   saveStockCount: 1, importBatch: 1, saveUser: 1,
-  saveWhParty: 1, addWhPartyPayment: 1, deliverFromWarehouse: 1, saveJournal: 1
+  saveWhParty: 1, addWhPartyPayment: 1, deliverFromWarehouse: 1, saveJournal: 1, addJournalPayment: 1
 };
 
 /** How long a completed request's result stays replayable, in seconds. */
@@ -429,6 +437,8 @@ function dispatch(action, p, token) {
 
     case 'saveJournal':      return saveJournal(p);
     case 'deleteJournal':    return deleteJournal(p);
+    case 'addJournalPayment':    return addJournalPayment(p);
+    case 'deleteJournalPayment': return deleteJournalPayment(p);
 
     case 'saveWarehouse':    return saveWarehouse(p);
     case 'archiveWarehouse': return toggleArchive('Warehouses', p.id, 'warehouse');
@@ -504,6 +514,7 @@ var ACTION_PAGES = {
   saveExpense: ['expenses'], saveStockLoss: ['stockLoss'], saveAsset: ['assets'],
   saveSettings: ['settings'],
   saveJournal: ['parties', 'suppliers', 'whParties'], deleteJournal: ['parties', 'suppliers', 'whParties'],
+  addJournalPayment: ['parties', 'suppliers', 'whParties'], deleteJournalPayment: ['parties', 'suppliers', 'whParties'],
   saveWarehouse: ['warehouses'], archiveWarehouse: ['warehouses'],
   saveWhMove: ['whMoves'], voidWhMove: ['whMoves'], saveStockCount: ['whCount'],
   saveWhExpense: ['whExpenses'], deleteWhExpense: ['whExpenses'],
@@ -692,7 +703,7 @@ function deleteUser(p) {
 // Activity on these records describes purchase prices.
 var COST_ACTIVITY = {
   purchase: 1, purchaseBill: 1, supplierPayment: 1, supplierReturn: 1, supplier: 1, stockLoss: 1,
-  'warehouse payment': 1, 'warehouse rates': 1
+  'warehouse payment': 1, 'warehouse rates': 1, 'journal payment': 1
 };
 
 function blank(rows, keys) {
@@ -701,6 +712,17 @@ function blank(rows, keys) {
     for (var k in r) o[k] = keys.indexOf(k) >= 0 ? '' : r[k];
     return o;
   });
+}
+
+/** A journal entry on a supplier's or warehouse party's ledger, without its amounts. */
+function withoutJournalMoney(e) {
+  if (e.kind === 'party') return e;
+  var o = {};
+  for (var k in e) o[k] = e[k];
+  o.amount = '';
+  o.direction = '';
+  o.fields = JSON.stringify(cleanJournalFields(e.fields).map(function (f) { return { label: f.label, value: f.value }; }));
+  return o;
 }
 
 /** The whole database as someone who may not see cost prices receives it. */
@@ -717,6 +739,9 @@ function stripCostData(out) {
   // A warehouse party's khata is money at buying rates: staff see the goods only.
   out.whParties = blank(out.whParties, ['openingBalance']);
   out.whPartyPayments = [];
+  // A supplier's or warehouse party's journal keeps its notes but not its money.
+  out.journal = (out.journal || []).map(withoutJournalMoney);
+  out.journalPayments = (out.journalPayments || []).filter(function (x) { return x.kind === 'party'; });
   out.stockLoss = blank(out.stockLoss, ['estimatedValue']);
   out.expenses = (out.expenses || []).filter(function (e) { return !e.linkedStockLossId; });
   out.activityLog = blank((out.activityLog || []).filter(function (l) { return !COST_ACTIVITY[l.entityType]; }), ['oldValue', 'newValue']);
@@ -1742,7 +1767,7 @@ function syncPush(p) {
     'EmployeeTransactions', 'Expenses', 'StockLoss',
     'SupplierPayments', 'SupplierReturns',
     'Warehouses', 'WhParties', 'WarehouseMoves', 'WarehouseMoveLines', 'WarehouseExpenses',
-    'WhPartyPayments', 'Journal', 'ActivityLog'
+    'WhPartyPayments', 'Journal', 'JournalPayments', 'ActivityLog'
   ];
 
   return withLock(function () {
@@ -4633,14 +4658,36 @@ function sharedWarehouseLedger(party, settings) {
 
 var JOURNAL_KINDS = { party: 'Parties', supplier: 'Suppliers', whParty: 'WhParties' };
 
-/** A journal entry's fields: {label, value} pairs the user made up, blanks dropped. */
+/**
+ * A journal entry's fields: {label, value, payment} rows the user made up,
+ * blanks dropped. `payment` is an optional amount counted toward the entry's
+ * money total.
+ */
 function cleanJournalFields(list) {
   if (typeof list === 'string') {
     try { list = JSON.parse(list); } catch (e) { list = []; }
   }
   return (Array.isArray(list) ? list : []).map(function (f) {
-    return { label: String((f && f.label) || '').trim(), value: String((f && f.value) || '').trim() };
-  }).filter(function (f) { return f.label || f.value; });
+    var row = { label: String((f && f.label) || '').trim(), value: String((f && f.value) || '').trim() };
+    var raw = f ? f.payment : '';
+    var pay = Number(raw);
+    if (raw !== '' && raw !== null && raw !== undefined && !isFinite(pay)) fail('A payment amount must be a number');
+    if (pay < 0) fail('A payment amount cannot be negative');
+    if (pay > 0) row.payment = r2(pay);
+    return row;
+  }).filter(function (f) { return f.label || f.value || f.payment; });
+}
+
+/** Money on a supplier's or warehouse party's ledger is for those who see cost prices. */
+function assertSeesMoney() {
+  if (CURRENT && !CURRENT.seesCost) fail('Only an admin can record money or rates.');
+}
+
+/** What has been collected or paid against one journal entry. */
+function journalSettled(journalId) {
+  return r2(readAll('JournalPayments')
+    .filter(function (x) { return x.journalId === journalId; })
+    .reduce(function (s, x) { return s + (Number(x.amount) || 0); }, 0));
 }
 
 function saveJournal(p) {
@@ -4652,21 +4699,42 @@ function saveJournal(p) {
     var fields = cleanJournalFields(p.fields);
     var title = String(p.title || '').trim();
     if (!title && !fields.length) fail('Write at least a title or one field');
-    var data = { date: p.date || todayISO(), title: title, fields: JSON.stringify(fields), updatedAt: nowISO() };
-
+    var amount = r2(fields.reduce(function (s, f) { return s + (Number(f.payment) || 0); }, 0));
+    var direction = p.direction === 'give' ? 'give' : 'take';
+    var existing = null;
     if (p.id) {
-      var existing = getById('Journal', p.id);
+      existing = getById('Journal', p.id);
       if (!existing) fail('Journal entry not found');
+    }
+    if (p.kind !== 'party' && (amount > 0 || (existing && Number(existing.amount) > 0))) assertSeesMoney();
+    var settled = existing ? journalSettled(existing.id) : 0;
+    if (settled > 0) {
+      if (amount < settled - 0.004) {
+        fail(settled + ' has already been ' + (existing.direction === 'take' ? 'collected' : 'paid') +
+             ' on this entry, so the total cannot go below that. Delete a payment first.');
+      }
+      if (amount > 0 && direction !== existing.direction) {
+        fail('Payments are already recorded on this entry, so it cannot switch between take and give. Delete them first.');
+      }
+    }
+    var data = {
+      date: p.date || todayISO(), title: title, fields: JSON.stringify(fields), amount: amount,
+      direction: amount > 0 ? direction : '', updatedAt: nowISO()
+    };
+
+    if (existing) {
       updateRow('Journal', existing._row, data);
       logActivity('journal', p.id, 'edit', 'Edited journal entry — ' + owner.name);
       return getById('Journal', p.id);
     }
     var rec = {
       id: uid('jrn'), kind: p.kind, partyId: owner.id, date: data.date, title: data.title, fields: data.fields,
-      createdAt: nowISO(), createdBy: ACTING_USER, updatedAt: data.updatedAt
+      createdAt: nowISO(), createdBy: ACTING_USER, updatedAt: data.updatedAt,
+      direction: data.direction, amount: data.amount
     };
     appendRow('Journal', rec);
-    logActivity('journal', rec.id, 'create', 'Added journal entry — ' + owner.name);
+    logActivity('journal', rec.id, 'create', 'Added journal entry — ' + owner.name +
+      (amount > 0 ? ' (' + (direction === 'take' ? 'to take ' : 'to give ') + amount + ')' : ''));
     return rec;
   });
 }
@@ -4675,10 +4743,61 @@ function deleteJournal(p) {
   return withLock(function () {
     var rec = getById('Journal', p.id);
     if (!rec) fail('Journal entry not found');
+    if (readAll('JournalPayments').some(function (x) { return x.journalId === rec.id; })) {
+      fail('Money has been recorded on this entry. Delete its payments first, then delete the entry.');
+    }
     var tab = JOURNAL_KINDS[rec.kind];
     var owner = tab ? getById(tab, rec.partyId) : null;
     deleteRowById('Journal', p.id);
     logActivity('journal', p.id, 'delete', 'Deleted journal entry' + (owner ? ' — ' + owner.name : ''), rec, null);
+    return { ok: true };
+  });
+}
+
+/**
+ * Money collected on, or paid out of, a journal entry. It lowers what the
+ * entry still has to take or give, and moves cash through the chosen method.
+ */
+function addJournalPayment(p) {
+  return withLock(function () {
+    var entry = getById('Journal', p.journalId);
+    if (!entry) fail('Journal entry not found');
+    var total = r2(entry.amount);
+    if (!(total > 0) || (entry.direction !== 'take' && entry.direction !== 'give')) {
+      fail('This entry has no payment to collect or give');
+    }
+    if (entry.kind !== 'party') assertSeesMoney();
+    var amount = r2(Number(p.amount));
+    if (!isFinite(amount) || amount <= 0) fail('Enter an amount greater than zero');
+    var left = r2(total - journalSettled(entry.id));
+    if (amount > left + 0.004) fail('Only ' + left + ' is left on this entry.');
+    var method = String(p.method || 'Cash');
+    assertMethod(method);
+    var tab = JOURNAL_KINDS[entry.kind];
+    var owner = tab ? getById(tab, entry.partyId) : null;
+    var take = entry.direction === 'take';
+    var rec = {
+      id: uid('jpy'), journalId: entry.id, kind: entry.kind, partyId: entry.partyId,
+      direction: take ? 'in' : 'out', amount: amount, date: p.date || todayISO(), method: method,
+      note: String(p.note || '').trim(), createdAt: nowISO(), createdBy: ACTING_USER
+    };
+    appendRow('JournalPayments', rec);
+    logActivity('journal payment', rec.id, 'create',
+      (take ? 'Collected ' + amount + ' from "' : 'Paid ' + amount + ' to "') + (owner ? owner.name : 'party') +
+      '" from the journal (' + method + ')');
+    return rec;
+  });
+}
+
+function deleteJournalPayment(p) {
+  return withLock(function () {
+    var rec = getById('JournalPayments', p.id);
+    if (!rec) fail('Payment not found');
+    if (rec.kind !== 'party') assertSeesMoney();
+    deleteRowById('JournalPayments', p.id);
+    logActivity('journal payment', p.id, 'delete',
+      'Deleted journal ' + (rec.direction === 'in' ? 'collection' : 'payment') + ' of ' + rec.amount +
+      (p.reason ? ' — ' + p.reason : ''), rec, null);
     return { ok: true };
   });
 }

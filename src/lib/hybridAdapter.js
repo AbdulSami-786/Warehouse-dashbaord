@@ -37,7 +37,7 @@ const TABS = {
   stockLoss: 'StockLoss', supplierPayments: 'SupplierPayments', supplierReturns: 'SupplierReturns',
   warehouses: 'Warehouses', whParties: 'WhParties', whMoves: 'WarehouseMoves',
   whMoveLines: 'WarehouseMoveLines', whExpenses: 'WarehouseExpenses', whPartyPayments: 'WhPartyPayments',
-  journal: 'Journal', activityLog: 'ActivityLog',
+  journal: 'Journal', journalPayments: 'JournalPayments', activityLog: 'ActivityLog',
 };
 
 // These touch what an upload cannot carry (users, settings, share links,

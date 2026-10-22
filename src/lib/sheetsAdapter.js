@@ -21,7 +21,7 @@ const RETRYABLE = new Set([
   'setOffParty',
   'saveWarehouse', 'saveWhMove', 'saveWhExpense',
   'saveStockCount', 'importBatch', 'listUsers',
-  'saveWhParty', 'addWhPartyPayment', 'saveJournal',
+  'saveWhParty', 'addWhPartyPayment', 'saveJournal', 'addJournalPayment',
   'syncPush',
 ]);
 

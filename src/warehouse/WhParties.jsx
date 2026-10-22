@@ -377,6 +377,8 @@ const KIND_PILL = {
   out: { status: 'due', label: 'Goods out' },
   paid: { status: 'partial', label: 'Paid' },
   received: { status: 'cleared', label: 'Received' },
+  journal: { status: 'partial', label: 'Journal' },
+  jpay: { status: 'cleared', label: 'Journal pay' },
 };
 
 function WhPartyLedger({ onRelock }) {
@@ -408,6 +410,7 @@ function WhPartyLedger({ onRelock }) {
   const detailOf = (r) => {
     if (r.kind === 'in' || r.kind === 'out') return [r.lines.map(lineText).join(', '), r.reference && `Ref ${r.reference}`].filter(Boolean).join(' · ');
     if (r.kind === 'paid' || r.kind === 'received') return [r.method, r.note].filter(Boolean).join(' · ');
+    if (r.kind === 'journal' || r.kind === 'jpay') return [r.method, r.detail].filter(Boolean).join(' · ');
     return '';
   };
   const lastDate = rows.filter((r) => r.kind !== 'opening').map((r) => String(r.date)).sort().pop();

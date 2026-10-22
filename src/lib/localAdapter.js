@@ -6,7 +6,7 @@ import { CONFIG, PAYMENT_METHODS } from './config.js';
 import { r2, today, addDays, uid, phoneKey, nameKey, dayOf } from './format.js';
 import {
   billState, billTotals, isOpeningBill, payableNow, lineDelivered, lineReceived, supplierBalance,
-  MOVE_TYPES, warehouseStockMap, itemStock,
+  MOVE_TYPES, warehouseStockMap, itemStock, journalClaims,
 } from './calc.js';
 import { accessOf, stripCostData, COST_PAGES, PAGES } from './permissions.js';
 
@@ -39,7 +39,7 @@ function emptyDb() {
     cheques: [], partyAdvances: [], purchases: [], employees: [], employeeTx: [], expenses: [],
     stockLoss: [], assets: [], activityLog: [], users: [], partyLedgerLinks: [], suppliers: [],
     purchaseBills: [], supplierPayments: [], supplierReturns: [],
-    warehouses: [], whMoves: [], whMoveLines: [], whExpenses: [], whParties: [], whPartyPayments: [], journal: [],
+    warehouses: [], whMoves: [], whMoveLines: [], whExpenses: [], whParties: [], whPartyPayments: [], journal: [], journalPayments: [],
     settings: {
       shopName: CONFIG.defaultShopName, phone: '', address: '', email: '', logoUrl: '',
       roundingRule: 'nearest1', priceAlertThreshold: 15, defaultCreditDays: 7, customMethods: [],
@@ -108,16 +108,30 @@ const IMPORT_ACTIONS = new Set(['saveParty', 'saveItem', 'saveSupplier', 'saveEm
 /** Where each kind of journal entry's owner lives in the database. */
 const JOURNAL_KINDS = { party: 'parties', supplier: 'suppliers', whParty: 'whParties' };
 
-/** A journal entry's fields: {label, value} pairs the user made up, blanks dropped. */
+/**
+ * A journal entry's fields: {label, value, payment} rows the user made up,
+ * blanks dropped. `payment` is an optional amount that counts toward the
+ * entry's money total.
+ */
 function cleanJournalFields(list) {
   let rows = list;
   if (typeof rows === 'string') {
     try { rows = JSON.parse(rows); } catch { rows = []; }
   }
   return (Array.isArray(rows) ? rows : [])
-    .map((f) => ({ label: String(f?.label || '').trim(), value: String(f?.value || '').trim() }))
-    .filter((f) => f.label || f.value);
+    .map((f) => {
+      const row = { label: String(f?.label || '').trim(), value: String(f?.value || '').trim() };
+      const pay = Number(f?.payment);
+      if (f?.payment !== '' && f?.payment != null && !Number.isFinite(pay)) throw new Error('A payment amount must be a number');
+      if (pay < 0) throw new Error('A payment amount cannot be negative');
+      if (pay > 0) row.payment = r2(pay);
+      return row;
+    })
+    .filter((f) => f.label || f.value || f.payment);
 }
+
+/** The money total of a journal entry's rows. */
+const journalTotal = (fields) => r2(fields.reduce((s, f) => s + (Number(f.payment) || 0), 0));
 
 /** Money on a warehouse party's khata is for those who see cost prices (MONEY_ACTIONS in Code.gs). */
 function assertSeesMoney(db) {
@@ -1715,7 +1729,7 @@ async function perform(action, p = {}) {
       return { ok: true };
     }
 
-    /* ----- Journal: notes on any ledger, no stock, payment or balance (see Code.gs) ----- */
+    /* ----- Journal: notes on any ledger, with an optional money total (see Code.gs) ----- */
     case 'saveJournal': {
       const table = JOURNAL_KINDS[p.kind];
       if (!table) throw new Error('Unknown ledger type');
@@ -1724,18 +1738,32 @@ async function perform(action, p = {}) {
       const fields = cleanJournalFields(p.fields);
       const title = String(p.title || '').trim();
       if (!title && !fields.length) throw new Error('Write at least a title or one field');
-      const data = { date: p.date || today(), title, fields: JSON.stringify(fields), updatedAt: new Date().toISOString() };
-      if (p.id) {
-        const i = db.journal.findIndex((x) => x.id === p.id);
-        if (i < 0) throw new Error('Journal entry not found');
-        db.journal[i] = { ...db.journal[i], ...data };
+      const amount = journalTotal(fields);
+      const direction = p.direction === 'give' ? 'give' : 'take';
+      const existing = p.id ? db.journal.find((x) => x.id === p.id) : null;
+      if (p.id && !existing) throw new Error('Journal entry not found');
+      // Money on a supplier's or warehouse party's ledger is for those who see cost prices.
+      if (p.kind !== 'party' && (amount > 0 || Number(existing?.amount) > 0)) assertSeesMoney(db);
+      const settled = existing
+        ? db.journalPayments.filter((x) => x.journalId === existing.id).reduce((s, x) => r2(s + x.amount), 0) : 0;
+      if (settled > 0) {
+        if (amount < settled - 0.004) throw new Error(`${settled} has already been ${existing.direction === 'take' ? 'collected' : 'paid'} on this entry, so the total cannot go below that. Delete a payment first.`);
+        if (amount > 0 && direction !== existing.direction) throw new Error('Payments are already recorded on this entry, so it cannot switch between take and give. Delete them first.');
+      }
+      const data = {
+        date: p.date || today(), title, fields: JSON.stringify(fields), amount, direction: amount > 0 ? direction : '',
+        updatedAt: new Date().toISOString(),
+      };
+      if (existing) {
+        const i = db.journal.indexOf(existing);
+        db.journal[i] = { ...existing, ...data };
         log(db, 'journal', p.id, 'edit', `Edited journal entry — ${owner.name}`);
         save();
         return db.journal[i];
       }
       const rec = { id: uid('jrn'), kind: p.kind, partyId: owner.id, ...data, createdAt: data.updatedAt, createdBy: getSession()?.username || 'system' };
       db.journal.push(rec);
-      log(db, 'journal', rec.id, 'create', `Added journal entry — ${owner.name}`);
+      log(db, 'journal', rec.id, 'create', `Added journal entry — ${owner.name}${amount > 0 ? ` (${direction === 'take' ? 'to take' : 'to give'} ${amount})` : ''}`);
       save();
       return rec;
     }
@@ -1744,9 +1772,48 @@ async function perform(action, p = {}) {
       const i = db.journal.findIndex((x) => x.id === p.id);
       if (i < 0) throw new Error('Journal entry not found');
       const rec = db.journal[i];
+      if (db.journalPayments.some((x) => x.journalId === rec.id)) {
+        throw new Error('Money has been recorded on this entry. Delete its payments first, then delete the entry.');
+      }
       const owner = db[JOURNAL_KINDS[rec.kind]]?.find((x) => x.id === rec.partyId);
       db.journal.splice(i, 1);
       log(db, 'journal', rec.id, 'delete', `Deleted journal entry${owner ? ` — ${owner.name}` : ''}`, rec, null);
+      save();
+      return { ok: true };
+    }
+
+    // Money collected on, or paid out of, a journal entry. It reduces what the entry still has to take or give.
+    case 'addJournalPayment': {
+      const entry = db.journal.find((x) => x.id === p.journalId);
+      if (!entry) throw new Error('Journal entry not found');
+      const claim = journalClaims(entry.kind, entry.partyId, db).find((x) => x.id === entry.id);
+      if (!claim) throw new Error('This entry has no payment to collect or give');
+      if (entry.kind !== 'party') assertSeesMoney(db);
+      const amount = r2(Number(p.amount));
+      if (!Number.isFinite(amount) || amount <= 0) throw new Error('Enter an amount greater than zero');
+      if (amount > claim.outstanding + 0.004) throw new Error(`Only ${claim.outstanding} is left on this entry.`);
+      const method = String(p.method || 'Cash');
+      assertMethod(method);
+      const owner = db[JOURNAL_KINDS[entry.kind]]?.find((x) => x.id === entry.partyId);
+      const take = entry.direction === 'take';
+      const rec = {
+        id: uid('jpy'), journalId: entry.id, kind: entry.kind, partyId: entry.partyId, direction: take ? 'in' : 'out',
+        amount, date: p.date || today(), method, note: String(p.note || '').trim(),
+        createdAt: new Date().toISOString(), createdBy: getSession()?.username || 'system',
+      };
+      db.journalPayments.push(rec);
+      log(db, 'journal payment', rec.id, 'create', `${take ? `Collected ${amount} from` : `Paid ${amount} to`} "${owner?.name || 'party'}" from the journal (${method})`);
+      save();
+      return rec;
+    }
+
+    case 'deleteJournalPayment': {
+      const i = db.journalPayments.findIndex((x) => x.id === p.id);
+      if (i < 0) throw new Error('Payment not found');
+      const rec = db.journalPayments[i];
+      if (rec.kind !== 'party') assertSeesMoney(db);
+      db.journalPayments.splice(i, 1);
+      log(db, 'journal payment', rec.id, 'delete', `Deleted journal ${rec.direction === 'in' ? 'collection' : 'payment'} of ${rec.amount}${p.reason ? ` — ${p.reason}` : ''}`, rec, null);
       save();
       return { ok: true };
     }

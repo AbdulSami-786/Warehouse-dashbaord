@@ -84,8 +84,25 @@ export function accessOf(user) {
 }
 
 const COST_ACTIVITY = new Set(['purchase', 'purchaseBill', 'supplierPayment', 'supplierReturn', 'supplier', 'stockLoss',
-  'warehouse payment', 'warehouse rates']);
+  'warehouse payment', 'warehouse rates', 'journal payment']);
 const blank = (rows = [], keys) => rows.map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, keys.includes(k) ? '' : v])));
+
+/**
+ * A supplier's or warehouse party's journal entry without its money: the
+ * amounts, the take / give choice and the payment on each row.
+ */
+function withoutJournalMoney(e) {
+  if (e.kind === 'party') return e;
+  let fields = e.fields;
+  try {
+    const list = typeof fields === 'string' ? JSON.parse(fields) : fields;
+    if (Array.isArray(list)) {
+      const clean = list.map(({ payment, ...rest }) => rest);
+      fields = typeof e.fields === 'string' ? JSON.stringify(clean) : clean;
+    }
+  } catch { /* leave the fields as they are */ }
+  return { ...e, fields, amount: '', direction: '' };
+}
 
 /** The database as someone who may not see cost prices receives it (stripCostData in Code.gs). */
 export function stripCostData(db) {
@@ -101,6 +118,8 @@ export function stripCostData(db) {
     whMoveLines: blank(db.whMoveLines, ['rate']),
     whParties: blank(db.whParties, ['openingBalance']),
     whPartyPayments: [],
+    journal: (db.journal || []).map(withoutJournalMoney),
+    journalPayments: (db.journalPayments || []).filter((x) => x.kind === 'party'),
     stockLoss: blank(db.stockLoss, ['estimatedValue']),
     expenses: (db.expenses || []).filter((e) => !e.linkedStockLossId),
     activityLog: blank((db.activityLog || []).filter((l) => !COST_ACTIVITY.has(l.entityType)), ['oldValue', 'newValue']),

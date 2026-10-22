@@ -341,7 +341,7 @@ function paidExpenses(expenses = []) {
 /** Money in and out of each payment method (Cash, JazzCash, bank…). */
 export function methodBalances(methods = [], {
   payments = [], expenses = [], employeeTx = [], cheques = [], supplierPayments = [], whExpenses = [], purchases = [],
-  whPartyPayments = [],
+  whPartyPayments = [], journalPayments = [],
 } = {}) {
   const uncleared = new Set(cheques.filter((c) => c.status !== 'cleared' && c.paymentId).map((c) => c.paymentId));
   const sum = (rows) => rows.reduce((s, x) => s + (Number(x.amount) || 0), 0);
@@ -349,13 +349,15 @@ export function methodBalances(methods = [], {
   const spent = paidExpenses(expenses);
   return methods.map((m) => {
     const inflow = sum(payments.filter((p) => p.method === m && !p.reversed && !uncleared.has(p.id))) +
-      sum(whPartyPayments.filter((p) => p.direction === 'received' && (p.method || 'Cash') === m));
+      sum(whPartyPayments.filter((p) => p.direction === 'received' && (p.method || 'Cash') === m)) +
+      sum(journalPayments.filter((p) => p.direction === 'in' && (p.method || 'Cash') === m));
     const out =
       sum(spent.filter((e) => (e.method || 'Cash') === m)) +
       sum(employeeTx.filter((t) => (t.method || 'Cash') === m && t.type !== 'bonus_accrual')) +
       sum(supplierPayments.filter((p) => (p.method || 'Cash') === m)) +
       sum(whExpenses.filter((e) => (e.method || 'Cash') === m)) +
       sum(whPartyPayments.filter((p) => p.direction === 'paid' && (p.method || 'Cash') === m)) +
+      sum(journalPayments.filter((p) => p.direction === 'out' && (p.method || 'Cash') === m)) +
       sum(bought.filter((p) => p.method === m));
     return { method: m, in: r2(inflow), out: r2(out), balance: r2(inflow - out) };
   });
@@ -365,7 +367,7 @@ export function methodBalances(methods = [], {
 export function methodLedger(method, {
   payments = [], expenses: allExpenses = [], employeeTx = [], cheques = [], parties = [], employees = [],
   supplierPayments = [], suppliers = [], whExpenses = [], warehouses = [], purchases = [], items = [],
-  whPartyPayments = [], whParties = [],
+  whPartyPayments = [], whParties = [], journalPayments = [],
 } = {}) {
   const expenses = paidExpenses(allExpenses);
   const uncleared = new Set(cheques.filter((c) => c.status !== 'cleared' && c.paymentId).map((c) => c.paymentId));
@@ -416,6 +418,17 @@ export function methodLedger(method, {
       desc: `${p.direction === 'paid' ? 'Paid to' : 'Received from'} ${whParties.find((x) => x.id === p.partyId)?.name || 'warehouse party'} (warehouse)${p.note ? ` — ${p.note}` : ''}`,
       relatedType: 'whParty', relatedId: p.partyId,
     }));
+  journalPayments
+    .filter((p) => (p.method || 'Cash') === method)
+    .forEach((p) => {
+      const owners = { party: parties, supplier: suppliers, whParty: whParties };
+      const name = (owners[p.kind] || []).find((x) => x.id === p.partyId)?.name || 'party';
+      rows.push({
+        id: p.id, date: p.date, direction: p.direction === 'out' ? 'out' : 'in', amount: r2(p.amount),
+        desc: `${p.direction === 'out' ? 'Paid to' : 'Collected from'} ${name} (journal)${p.note ? ` — ${p.note}` : ''}`,
+        relatedType: p.kind === 'supplier' ? 'supplier' : p.kind === 'whParty' ? 'whParty' : 'journal', relatedId: p.partyId,
+      });
+    });
   paidPurchases(purchases)
     .filter((p) => p.method === method)
     .forEach((p) => rows.push({
@@ -469,6 +482,11 @@ export function balanceSheet(data) {
   const whBalances = [...whPartySummaries(data).values()].map((x) => x.balance);
   const whReceivable = r2(whBalances.reduce((t, b) => t + Math.max(0, b), 0));
   const whPayable = r2(whBalances.reduce((t, b) => t + Math.max(0, -b), 0));
+  // What the journals leave open with shop parties (suppliers and warehouse
+  // parties already carry theirs in the two balances above).
+  const jOwed = parties.map((p) => journalOwed('party', p.id, data));
+  const jReceivable = r2(jOwed.reduce((t, b) => t + Math.max(0, b), 0));
+  const jPayable = r2(jOwed.reduce((t, b) => t + Math.max(0, -b), 0));
   const owns = [
     { label: 'Cash & Bank Balances', value: cash },
     { label: 'Stock Value (at cost)', value: stock },
@@ -476,11 +494,13 @@ export function balanceSheet(data) {
     { label: 'Receivables (party dues)', value: receivable },
     { label: 'Advances paid to suppliers', value: supplierAdvances },
     ...(whReceivable ? [{ label: 'Warehouse parties owe us', value: whReceivable }] : []),
+    ...(jReceivable ? [{ label: 'Journal — parties owe us', value: jReceivable }] : []),
     { label: 'Assets', value: assetValue },
   ];
   const owes = [
     { label: 'Payables (supplier dues)', value: payable },
     ...(whPayable ? [{ label: 'Warehouse party dues', value: whPayable }] : []),
+    ...(jPayable ? [{ label: 'Journal — we owe parties', value: jPayable }] : []),
     { label: 'Customer advances held', value: customerAdvances },
     { label: 'Unpaid Salaries (this month)', value: unpaidSalaries },
   ];
@@ -607,6 +627,67 @@ function paymentGroups(payments) {
   flush();
   for (const [k, ids] of groups) if (ids.length > 1) ids.forEach((id) => keyOf.set(id, k));
   return keyOf;
+}
+
+/* ------------------------------------------------------------ Journal money */
+
+/** A journal entry's {label, value, payment} rows, whether they came from the Sheet (text) or the local copy. */
+export function journalFieldList(entry) {
+  let list = entry?.fields;
+  if (typeof list === 'string') {
+    try { list = JSON.parse(list); } catch { list = []; }
+  }
+  return Array.isArray(list) ? list : [];
+}
+
+/**
+ * Journal entries on one ledger that carry money, each with what has been
+ * collected or paid through it and what is left. `take` means the party pays
+ * the shop, `give` means the shop pays the party.
+ */
+export function journalClaims(kind, partyId, { journal = [], journalPayments = [] } = {}) {
+  return journal
+    .filter((e) => e.kind === kind && e.partyId === partyId && (e.direction === 'take' || e.direction === 'give') && Number(e.amount) > 0)
+    .map((e) => {
+      const amount = r2(e.amount);
+      const pays = journalPayments.filter((p) => p.journalId === e.id);
+      const settled = r2(pays.reduce((s, p) => s + (Number(p.amount) || 0), 0));
+      return { ...e, amount, settled, pays, outstanding: r2(Math.max(0, amount - settled)) };
+    });
+}
+
+/** What a journal leaves one party owing the shop: above zero they owe us, below zero we owe them. */
+export function journalOwed(kind, partyId, data = {}) {
+  return r2(journalClaims(kind, partyId, data)
+    .reduce((s, e) => s + (e.direction === 'take' ? e.outstanding : -e.outstanding), 0));
+}
+
+/**
+ * A journal's money as statement rows, from the shop's side: a debit is more
+ * owed to us, a credit less. A supplier's statement runs the other way and
+ * swaps the two.
+ */
+export function journalRows(kind, partyId, data = {}) {
+  const rows = [];
+  journalClaims(kind, partyId, data).forEach((e) => {
+    const take = e.direction === 'take';
+    rows.push({
+      id: `jr-${e.id}`, journalId: e.id, type: 'journal', kind: 'journal', date: e.date, createdAt: e.createdAt || '',
+      title: `Journal — ${e.title || (take ? 'to take' : 'to give')}`,
+      detail: take ? 'From the journal: to be collected' : 'From the journal: to be paid',
+      method: '', debit: take ? e.amount : 0, credit: take ? 0 : e.amount,
+    });
+    e.pays.forEach((p) => {
+      const amount = r2(p.amount);
+      rows.push({
+        id: `jp-${p.id}`, journalPaymentId: p.id, journalId: e.id, type: 'jpay', kind: 'jpay', date: p.date, createdAt: p.createdAt || '',
+        title: take ? 'Collected — journal' : 'Paid — journal',
+        detail: [e.title, p.note].filter(Boolean).join(' · '), method: p.method || '',
+        debit: take ? 0 : amount, credit: take ? amount : 0,
+      });
+    });
+  });
+  return rows;
 }
 
 /** Fold the parts of one grouped receipt into a single ledger line. */
@@ -776,8 +857,10 @@ export function partyLedger(partyId, data = {}, from = null, to = null) {
     });
   });
 
+  journalRows('party', partyId, data).filter((r) => within(r.date)).forEach((r) => rows.push(r));
+
   const folded = collapseGroups(rows);
-  const order = { bill: 0, payment: 1, advance: 1, 'cheque-pending': 1, return: 2, reversal: 3, bounced: 3, void: 4, info: 5 };
+  const order = { bill: 0, journal: 0, payment: 1, jpay: 1, advance: 1, 'cheque-pending': 1, return: 2, reversal: 3, bounced: 3, void: 4, info: 5 };
   folded.sort((a, b) => new Date(a.date) - new Date(b.date) ||
     (order[a.type] ?? 9) - (order[b.type] ?? 9) || String(a.id).localeCompare(String(b.id)));
   let bal = 0;
@@ -790,13 +873,17 @@ export function partyLedger(partyId, data = {}, from = null, to = null) {
 /* -------------------------------------------------------------- Suppliers */
 
 /** What the shop owes a supplier. Below zero is an advance they hold. */
-export function supplierBalance(supplierId, { suppliers = [], purchaseBills = [], supplierPayments = [], supplierReturns = [] } = {}) {
+export function supplierBalance(supplierId, {
+  suppliers = [], purchaseBills = [], supplierPayments = [], supplierReturns = [], journal = [], journalPayments = [],
+} = {}) {
   const opening = Number(suppliers.find((s) => s.id === supplierId)?.openingBalance) || 0;
   const bought = purchaseBills.filter((b) => b.supplierId === supplierId && b.status !== 'voided')
     .reduce((s, b) => s + (Number(b.totalAmount) || 0), 0);
   const paid = supplierPayments.filter((p) => p.supplierId === supplierId).reduce((s, p) => s + (Number(p.amount) || 0), 0);
   const returned = supplierReturns.filter((r) => r.supplierId === supplierId).reduce((s, r) => s + (Number(r.value) || 0), 0);
-  return r2(opening + bought - paid - returned);
+  // The journal's "to take" is money the supplier owes us, so it lowers what we owe.
+  const noted = journalOwed('supplier', supplierId, { journal, journalPayments });
+  return r2(opening + bought - paid - returned - noted);
 }
 
 /** Each purchase bill of a supplier with what is still owed on it. */
@@ -888,7 +975,9 @@ export function supplierLedger(supplierId, data = {}, from = null, to = null) {
       detail: `${itemName(r.itemId)} × ${r.qty}${r.note ? ` · ${r.note}` : ''}`, debit: 0, credit: r2(r.value),
     });
   });
-  const order = { opening: 0, purchase: 1, void: 1, payment: 2, return: 3 };
+  // A supplier's statement counts what we owe them, so the journal's rows swap sides.
+  journalRows('supplier', supplierId, data).forEach((r) => rows.push({ ...r, debit: r.credit, credit: r.debit }));
+  const order = { opening: 0, purchase: 1, void: 1, journal: 1, payment: 2, jpay: 2, return: 3 };
   rows.sort((a, b) => String(a.date).localeCompare(String(b.date)) ||
     (order[a.type] ?? 9) - (order[b.type] ?? 9) || String(a.id).localeCompare(String(b.id)));
   let bal = 0;
@@ -981,7 +1070,7 @@ function ledgerKind(row, { supplierView = false } = {}) {
   const t = String(row?.type || '');
   const buying = row?.side === 'purchase' || t.startsWith('sup-') || (supplierView && row?.side !== 'sale');
   const base = t.replace(/^(sup|sale)-/, '');
-  if (base === 'opening') return 'other';
+  if (base === 'opening' || base === 'journal' || base === 'jpay') return 'other';
   if (buying) {
     if (base === 'purchase' || base === 'void') return 'purchases';
     if (base === 'payment') return 'paid';
@@ -1158,7 +1247,7 @@ const hasRate = (l) => l.rate !== '' && l.rate !== null && l.rate !== undefined;
  * through, at zero.
  */
 export function whPartyKhata({
-  openingBalance = 0, openingDate = '', moves = [], lines = [], payments = [],
+  openingBalance = 0, openingDate = '', moves = [], lines = [], payments = [], journal = [],
   itemName = (l) => l.itemName || 'Item',
 } = {}) {
   const byMove = new Map();
@@ -1202,7 +1291,9 @@ export function whPartyKhata({
       debit: paid ? amount : 0, credit: paid ? 0 : amount, createdAt: p.createdAt || '',
     });
   });
-  const rank = { opening: 0, in: 1, out: 1, paid: 2, received: 2 };
+  // Money noted in the journal, already worked out by journalRows().
+  journal.forEach((r) => rows.push(r));
+  const rank = { opening: 0, in: 1, out: 1, journal: 1, paid: 2, received: 2, jpay: 2 };
   rows.sort((a, b) => (a.kind === 'opening' ? -1 : b.kind === 'opening' ? 1 : 0)
     || String(dayOf(a.date)).localeCompare(String(dayOf(b.date)))
     || rank[a.kind] - rank[b.kind]
@@ -1245,6 +1336,7 @@ export function whPartyLedger(partyId, data = {}) {
     moves,
     lines: whMoveLines.filter((l) => ids.has(l.moveId)),
     payments: whPartyPayments.filter((p) => p.partyId === partyId),
+    journal: journalRows('whParty', partyId, data),
     itemName: (l) => names.get(l.itemId) || 'Item',
   });
 }
@@ -1297,7 +1389,8 @@ export function whPartySummaries(data = {}) {
     }
     if (String(dayOf(p.date)) > s.lastDate) s.lastDate = String(dayOf(p.date));
   });
-  out.forEach((s) => {
+  out.forEach((s, id) => {
+    s.balance += journalOwed('whParty', id, data);
     ['receivedQty', 'sentQty', 'receivedValue', 'sentValue', 'paid', 'received', 'balance'].forEach((k) => { s[k] = r2(s[k]); });
   });
   return out;

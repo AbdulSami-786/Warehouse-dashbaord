@@ -69,6 +69,8 @@ export const api = {
 
   saveJournal: (p) => call('saveJournal', p),
   deleteJournal: (id) => call('deleteJournal', { id }),
+  addJournalPayment: (p) => call('addJournalPayment', p),
+  deleteJournalPayment: (id, reason) => call('deleteJournalPayment', { id, reason }),
 
   saveSettings: (p) => call('saveSettings', p),
 
