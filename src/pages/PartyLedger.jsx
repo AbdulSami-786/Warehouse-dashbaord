@@ -254,7 +254,7 @@ function PartyLedger({ onRelock }) {
         {reorder?.isDue && <span className="pill pill-partial">Usually orders every {reorder.avgDays} days — it has been {reorder.sinceDays}</span>}
       </div>
 
-      <div className="row mb-2" style={{ gap: 8 }}>
+      <div className="row mb-2" style={{ gap: 8, flexWrap: 'wrap' }}>
         <div className="seg">
           <button className={view === 'statement' ? 'active' : ''} onClick={() => setView('statement')}>Full Statement</button>
           <button className={view === 'bills' ? 'active' : ''} onClick={() => setView('bills')}>Bills Only</button>

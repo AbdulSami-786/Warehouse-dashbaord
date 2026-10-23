@@ -11,10 +11,10 @@ export const CONFIG = {
   backend: 'sheets',
   appsScriptUrl: 'https://script.google.com/macros/s/AKfycby3wFiiCoVitq8MQTH6AlbpdaRBqzvzW7Fg4oAkWWdp1o4Ron7rjgFJqHf4L42RjsxG/exec',
 
-  // Where shared 
-  // party-ledger links point. Blank means this same page, which
-  // is the only place the data exists while everything is stored locally.
-  publicUrl: '',
+  // Where shared party-ledger links point, so a link made on localhost, online
+  // or in the desktop software always opens the live site. Blank means this
+  // same page, which only works while everything is stored locally.
+  publicUrl: 'https://warehouse-dashbaord-9uqy.vercel.app',
 };
 
 export const PAYMENT_METHODS = ['Cash', 'JazzCash', 'EasyPaisa', 'HBL Bank', 'Cheque'];

@@ -2677,7 +2677,7 @@ a, button, .clickable, .mcard, .chip, .seg button { -webkit-tap-highlight-color:
   .modal-body { -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
   .modal-foot { border-radius: 0; position: sticky; bottom: 0; }
 
-  .seg { overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
+  .seg { overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; flex-shrink: 0; max-width: 100%; }
   .seg::-webkit-scrollbar { display: none; }
   .seg button { flex: 0 0 auto; }
 
