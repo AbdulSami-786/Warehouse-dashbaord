@@ -195,7 +195,7 @@ function SettleModal({ claim, party, onClose }) {
  * supplier, whParty). An entry is notes; give a row a payment and the entry's
  * total also joins that ledger's balance, as money to take or to give.
  */
-export default function PartyJournal({ kind, party }) {
+export default function PartyJournal({ kind, party, action = null, onActionDone }) {
   const { data, mutate, access } = useApp();
   const canMoney = kind === 'party' || access.seesCost;
   const [q, setQ] = useState('');
@@ -219,6 +219,14 @@ export default function PartyJournal({ kind, party }) {
   const labels = useMemo(() => [...new Set(all.flatMap((e) => journalFields(e).map((f) => f.label)).filter(Boolean))].sort(), [all]);
 
   useEffect(() => { setEditing(null); setDeleting(null); setSettling(null); setDelPay(null); }, [party.id]);
+
+  // An edit or delete asked for from the statement opens the same dialog as the buttons here.
+  useEffect(() => {
+    if (!action) return;
+    const entry = all.find((e) => e.id === action.id);
+    if (entry) (action.mode === 'delete' ? setDeleting : setEditing)(entry);
+    onActionDone?.();
+  }, [action]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const editingEntry = editing && editing !== 'new' ? editing : null;
   const hasMoney = claims.size > 0;
@@ -257,8 +265,8 @@ export default function PartyJournal({ kind, party }) {
                     <span className="small muted nowrap">{e.date ? fmtDate(e.date) : '—'}</span>
                     {e.title && <strong>{e.title}</strong>}
                     <span className="spacer" />
-                    <button className="btn btn-ghost btn-sm" title="Edit entry" onClick={() => setEditing(e)}><Pencil size={14} /></button>
-                    <button className="btn btn-ghost btn-sm" title="Delete entry" onClick={() => setDeleting(e)}><Trash2 size={14} /></button>
+                    <Button size="sm" icon={Pencil} onClick={() => setEditing(e)} title="Edit this entry">Edit</Button>
+                    <Button size="sm" icon={Trash2} onClick={() => setDeleting(e)} title="Delete this entry">Delete</Button>
                   </div>
                   {fields.length > 0 && (
                     <dl style={{ margin: '8px 0 0', display: 'grid', gridTemplateColumns: 'minmax(80px, max-content) 1fr auto', gap: '4px 14px', fontSize: 13 }}>
@@ -293,7 +301,7 @@ export default function PartyJournal({ kind, party }) {
                               <span>{d.doneWord} {money(p.amount)}</span>
                               <span className="muted">{[p.method, p.note].filter(Boolean).join(' · ')}</span>
                               <span className="spacer" />
-                              <button className="btn btn-ghost btn-sm" title="Delete this payment" onClick={() => setDelPay(p)}><Trash2 size={13} /></button>
+                              <Button size="sm" icon={Trash2} onClick={() => setDelPay(p)} title="Remove this payment from the entry">Remove</Button>
                             </div>
                           ))}
                         </div>

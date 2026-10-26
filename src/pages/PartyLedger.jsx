@@ -64,6 +64,9 @@ function PartyLedger({ onRelock }) {
   const [delCheque, setDelCheque] = useState(null);
   const [delAdvance, setDelAdvance] = useState(null);
   const [delOrphan, setDelOrphan] = useState(null);
+  const [journalAct, setJournalAct] = useState(null); // an edit/delete asked for on a journal row
+  const [delJpay, setDelJpay] = useState(null); // a journal collection row
+  const [delGroup, setDelGroup] = useState(null); // a combined payment row
   const [pricesOpen, setPricesOpen] = useState(false);
   const [buyOpen, setBuyOpen] = useState(false);
   const [payThemOpen, setPayThemOpen] = useState(false);
@@ -180,6 +183,14 @@ function PartyLedger({ onRelock }) {
             <Button size="sm" icon={Trash2} onClick={stop(() => deleteEntry(r))} title={r.isAdvance ? 'Delete this advance' : 'Delete this payment'}>{mobile ? 'Delete' : null}</Button>
           </>
         )}
+        {r.type === 'journal' && r.journalId && (
+          <>
+            <Button size="sm" icon={Pencil} onClick={stop(() => { setView('journal'); setJournalAct({ id: r.journalId, mode: 'edit' }); })} title="Edit this journal entry">{mobile ? 'Edit' : null}</Button>
+            <Button size="sm" icon={Trash2} onClick={stop(() => { setView('journal'); setJournalAct({ id: r.journalId, mode: 'delete' }); })} title="Delete this journal entry">{mobile ? 'Delete' : null}</Button>
+          </>
+        )}
+        {r.journalPaymentId && !r.parts && <Button size="sm" icon={Trash2} onClick={stop(() => setDelJpay(r))} title="Remove this journal payment">{mobile ? 'Remove' : null}</Button>}
+        {r.parts && String(r.id).startsWith('grp-') && <Button size="sm" icon={Trash2} onClick={stop(() => setDelGroup(r))} title="Delete this whole payment">{mobile ? 'Delete all' : null}</Button>}
         {r.chequeId && <Button size="sm" icon={Ban} onClick={stop(() => setDelCheque(r.chequeId))} title="Delete this cheque record">{mobile ? 'Delete cheque' : null}</Button>}
         {r.supplierPaymentId && <Button size="sm" icon={Trash2} onClick={stop(() => setDelSupPay(r.supplierPaymentId))} title="Delete this payment to them">{mobile ? 'Delete' : null}</Button>}
       </>
@@ -366,7 +377,7 @@ function PartyLedger({ onRelock }) {
                       {r.parts && <span className="small" style={{ fontWeight: 600 }}>{openGroups[r.id] ? 'Hide parts' : `${r.parts.length} parts`}</span>}
                       {!r.isPart && <span style={{ fontWeight: 700 }}>Bal {money(r.balance)}</span>}
                     </div>
-                    {(r.billId || (r.paymentId && !r.reversed) || r.chequeId || r.supplierPaymentId) && (
+                    {(r.billId || (r.paymentId && !r.reversed) || r.chequeId || r.supplierPaymentId || (r.type === 'journal' && r.journalId) || (r.journalPaymentId && !r.parts) || r.parts) && (
                       <div className="row wrap" style={{ gap: 6, marginTop: 8 }}>{rowActions(r, true)}</div>
                     )}
                   </div>
@@ -379,7 +390,7 @@ function PartyLedger({ onRelock }) {
         </Card>
       )}
 
-      {view === 'journal' && <PartyJournal kind="party" party={party} />}
+      {view === 'journal' && <PartyJournal kind="party" party={party} action={journalAct} onActionDone={() => setJournalAct(null)} />}
 
       {view === 'bills' && (
         <Card title="Bills" subtitle="Due and partly paid bills are shown first" tight>
@@ -564,6 +575,33 @@ function PartyLedger({ onRelock }) {
         })()}
         onCancel={() => setDelPay(null)}
         onConfirm={async () => { const pid = delPay; setDelPay(null); await mutate(() => api.deletePayment(pid), 'Payment deleted'); }}
+      />
+      <Confirm
+        open={!!delJpay}
+        danger
+        title="Remove this journal payment?"
+        confirmLabel="Remove payment"
+        message={delJpay ? `The ${money(delJpay.originalAmount)} collected on ${fmtDate(delJpay.date)} will be removed, so that amount is owed again on the journal entry.` : ''}
+        onCancel={() => setDelJpay(null)}
+        onConfirm={async () => { const r = delJpay; setDelJpay(null); await mutate(() => api.deleteJournalPayment(r.journalPaymentId), 'Journal payment removed').catch(() => {}); }}
+      />
+      <Confirm
+        open={!!delGroup}
+        danger
+        title="Delete this whole payment?"
+        confirmLabel="Delete all parts"
+        message={delGroup ? `${money(delGroup.originalAmount)} on ${fmtDate(delGroup.date)} will be removed from ${delGroup.parts.length} places (${delGroup.parts.map(partName).join(', ')}). Those bills and journal amounts will be owed again. This cannot be undone.` : ''}
+        onCancel={() => setDelGroup(null)}
+        onConfirm={async () => {
+          const g = delGroup;
+          setDelGroup(null);
+          await mutate(async () => {
+            for (const part of g.parts) {
+              if (part.journalPaymentId) await api.deleteJournalPayment(part.journalPaymentId);
+              else if (part.paymentId) await api.deletePayment(part.paymentId);
+            }
+          }, 'Payment deleted').catch(() => {});
+        }}
       />
       <Confirm
         open={!!delCheque}
