@@ -1502,6 +1502,13 @@ async function perform(action, p = {}) {
         returns: db.returns.filter((x) => ids.has(x.billId)),
         cheques: db.cheques.filter((x) => x.partyId === link.partyId),
         partyAdvances: db.partyAdvances.filter((x) => x.partyId === link.partyId),
+        // Only title, date and amount of the money-bearing entries — never the shop's own field notes.
+        journal: (db.journal || [])
+          .filter((x) => x.kind === 'party' && x.partyId === link.partyId && Number(x.amount) > 0)
+          .map((x) => ({ id: x.id, kind: x.kind, partyId: x.partyId, date: x.date, title: x.title, direction: x.direction, amount: x.amount, createdAt: x.createdAt })),
+        journalPayments: (db.journalPayments || [])
+          .filter((x) => x.kind === 'party' && x.partyId === link.partyId)
+          .map((x) => ({ id: x.id, journalId: x.journalId, amount: x.amount, date: x.date, method: x.method, createdAt: x.createdAt })),
       };
     }
 

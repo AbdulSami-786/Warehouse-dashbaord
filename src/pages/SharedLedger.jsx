@@ -7,7 +7,9 @@ import { api } from '../lib/api.js';
 import {
   money, r2, fmtDate, qty, BUCKET_META,
 } from '../lib/format.js';
-import { billStates, whPartyKhata, whPartyTotals } from '../lib/calc.js';
+import {
+  billStates, partyLedger, whPartyKhata, whPartyTotals,
+} from '../lib/calc.js';
 import {
   Button, Empty, Field, Input, Money, Pill,
 } from '../components/ui.jsx';
@@ -34,8 +36,119 @@ function AcunnityNav() {
   );
 }
 
+/**
+ * Every entry on the account in date order — bills, payments, cheques, returns
+ * and journal money — with a running balance. Worked out by the same
+ * partyLedger() as the shop's own Account Statement.
+ */
+function FullStatement({ data, onBill }) {
+  const [openGroups, setOpenGroups] = useState({});
+  const ledger = useMemo(() => partyLedger('shared', {
+    ...data,
+    bills: (data.bills || []).map((b) => ({ ...b, partyId: 'shared' })),
+    payments: (data.payments || []).map((p) => ({ ...p, partyId: 'shared' })),
+    partyAdvances: (data.partyAdvances || []).map((a) => ({ ...a, partyId: 'shared' })),
+    journal: (data.journal || []).map((e) => ({ ...e, kind: 'party', partyId: 'shared' })),
+    journalPayments: data.journalPayments || [],
+    items: [...new Map((data.billItems || []).map((l) => [l.itemId, { id: l.itemId, name: l.itemName }])).values()],
+  }), [data]);
+  const rows = useMemo(
+    () => ledger.flatMap((r) => (r.parts && openGroups[r.id] ? [r, ...r.parts.map((p) => ({ ...p, isPart: true }))] : [r])),
+    [ledger, openGroups],
+  );
+  const closing = ledger.length ? ledger[ledger.length - 1].balance : 0;
+  const toggle = (r) => setOpenGroups((g) => ({ ...g, [r.id]: !g[r.id] }));
+  const open = (r) => {
+    if (r.parts) toggle(r);
+    else if (r.billId && !r.isPart) onBill(r.billId);
+  };
+  return (
+    <div className="card" style={{ overflow: 'hidden' }}>
+      <div className="card-head"><h2 className="h2">Account Statement</h2></div>
+      {ledger.length ? (
+        <>
+          <div className="table-wrap hide-mobile">
+            <table className="tbl stmt-tbl">
+              <thead>
+                <tr>
+                  <th style={{ width: 96 }}>Date</th><th>Particulars</th><th style={{ width: 108 }}>Method</th>
+                  <th className="r" style={{ width: 110 }}>Debit (+)</th><th className="r" style={{ width: 110 }}>Credit (−)</th>
+                  <th className="r" style={{ width: 120 }}>Balance</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr
+                    key={r.isPart ? `part-${r.id}` : r.id}
+                    style={r.isPart ? { background: 'var(--neutral-bg)' } : undefined}
+                    className={`${(r.billId && !r.voided && !r.isPart) || r.parts ? 'clickable' : ''} stmt-${r.type}`}
+                    onClick={() => open(r)}
+                  >
+                    <td className="nowrap small">{r.isPart ? '' : fmtDate(r.date)}</td>
+                    <td style={r.isPart ? { paddingLeft: 28 } : undefined}>
+                      <div style={{ fontWeight: r.isPart ? 500 : 600, textDecoration: r.voided ? 'line-through' : 'none' }}>
+                        {r.parts && (openGroups[r.id] ? <ChevronDown size={13} style={{ verticalAlign: -2 }} /> : <ChevronRight size={13} style={{ verticalAlign: -2 }} />)}
+                        {r.parts && ' '}
+                        {r.isPart ? `↳ Bill ${r.billNo || ''}` : r.title}
+                      </div>
+                      {r.detail && <div className="small muted">{r.detail}</div>}
+                    </td>
+                    <td className="small">{r.method ? <Pill status="neutral" label={r.method} /> : <span className="muted">—</span>}</td>
+                    <td className="r strong">{r.debit > 0 ? <Money value={r.debit} /> : <span className="muted">—</span>}</td>
+                    <td className="r strong">
+                      {r.credit > 0 ? <span className="money pos">{money(r.credit)}</span>
+                        : r.pending > 0 ? <span className="money" style={{ color: '#B45309' }}>({money(r.pending)})</span>
+                          : r.struck ? <span className="muted small" style={{ textDecoration: 'line-through' }}>{money(r.originalAmount)}</span>
+                            : <span className="muted">—</span>}
+                    </td>
+                    <td className="r strong">{!r.isPart && <span className="money" style={{ color: r.balance > 0 ? 'var(--danger)' : 'var(--success)' }}>{money(r.balance)}</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td colSpan={3}>Closing balance{closing < -0.004 && ' (in your favour)'}</td>
+                  <td className="r">{money(r2(ledger.reduce((s, r) => s + r.debit, 0)))}</td>
+                  <td className="r">{money(r2(ledger.reduce((s, r) => s + r.credit, 0)))}</td>
+                  <td className="r" style={{ fontSize: 14 }}>{money(closing)}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+          <div className="mcards" style={{ padding: 12 }}>
+            {rows.map((r) => (
+              <div
+                key={r.isPart ? `part-${r.id}` : r.id}
+                className="mcard"
+                style={r.isPart ? { marginLeft: 18, background: 'var(--neutral-bg)' } : undefined}
+                onClick={() => open(r)}
+              >
+                <div className="top">
+                  <span className="name" style={{ textDecoration: r.voided ? 'line-through' : 'none' }}>{r.isPart ? `↳ Bill ${r.billNo || ''}` : r.title}</span>
+                  <span className="amt" style={{ color: r.debit > 0 ? 'var(--danger)' : r.pending > 0 ? '#B45309' : 'var(--success)' }}>
+                    {r.debit > 0 ? `+${money(r.debit)}` : r.credit > 0 ? `−${money(r.credit)}` : r.pending > 0 ? `(${money(r.pending)})` : '—'}
+                  </span>
+                </div>
+                {r.detail && <div className="small muted">{r.detail}</div>}
+                <div className="meta">
+                  <span>{fmtDate(r.date)}</span>
+                  {r.method && <Pill status="neutral" label={r.method} />}
+                  <span className="spacer" />
+                  {r.parts && <span className="small" style={{ fontWeight: 600 }}>{openGroups[r.id] ? 'Hide bills' : `${r.parts.length} bills`}</span>}
+                  {!r.isPart && <span style={{ fontWeight: 700 }}>Bal {money(r.balance)}</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : <Empty icon={Receipt} title="No entries yet" message="There is nothing on your account yet." />}
+    </div>
+  );
+}
+
 function Statement({ data }) {
   const [openId, setOpenId] = useState(null);
+  const [view, setView] = useState('statement');
   const bills = useMemo(() => {
     const states = billStates(data.bills, data);
     const rank = (b) => (b.status === 'voided' ? 2 : b.due > 0 ? 0 : 1);
@@ -73,7 +186,12 @@ function Statement({ data }) {
             {totals.advance > 0 && <div><div className="small muted">Advance with shop</div><div className="money" style={{ fontSize: 18, color: 'var(--success)' }}>{money(totals.advance)}</div></div>}
           </div>
         </div>
-        <div className="card" style={{ overflow: 'hidden' }}>
+        <div className="seg mb-2" style={{ marginBottom: 12 }}>
+          <button className={view === 'statement' ? 'active' : ''} onClick={() => setView('statement')}>Full Statement</button>
+          <button className={view === 'bills' ? 'active' : ''} onClick={() => setView('bills')}>Bills Only</button>
+        </div>
+        {view === 'statement' && <FullStatement data={data} onBill={setOpenId} />}
+        {view === 'bills' && <div className="card" style={{ overflow: 'hidden' }}>
           <div className="card-head"><h2 className="h2">Your Bills</h2></div>
           {bills.length ? (
             <>
@@ -110,7 +228,7 @@ function Statement({ data }) {
               </div>
             </>
           ) : <Empty icon={Receipt} title="No bills yet" message="There are no bills on your account." />}
-        </div>
+        </div>}
         <BillPreview
           open={!!openId}
           onClose={() => setOpenId(null)}

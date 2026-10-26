@@ -205,7 +205,7 @@ var BOOLEAN = { reversed: 1, restock: 1, active: 1, isAdvance: 1 };
  * was not updated (Deploy > Manage deployments > edit > New version > Deploy).
  * Keep in step with package.json.
  */
-var BACKEND_VERSION = '2.7.0';
+var BACKEND_VERSION = '2.7.3';
 
 function doGet(e) {
   return json({ ok: true, data: { status: 'SGA Balloon Merchant backend is running', version: BACKEND_VERSION } });
@@ -5049,7 +5049,20 @@ function openSharedLedger(p) {
     payments: readAll('Payments').filter(function (x) { return x.partyId === link.partyId; }),
     returns: readAll('Returns').filter(function (x) { return billIds[x.billId]; }),
     cheques: readAll('Cheques').filter(function (x) { return x.partyId === link.partyId; }),
-    partyAdvances: readAll('PartyAdvances').filter(function (x) { return x.partyId === link.partyId; })
+    partyAdvances: readAll('PartyAdvances').filter(function (x) { return x.partyId === link.partyId; }),
+    // Journal entries that carry money join the statement's balance. Only the
+    // title, date and amount go out — never the shop's own field notes.
+    journal: readAll('Journal').filter(function (x) {
+      return x.kind === 'party' && x.partyId === link.partyId && Number(x.amount) > 0;
+    }).map(function (x) {
+      return { id: x.id, kind: x.kind, partyId: x.partyId, date: x.date, title: x.title,
+               direction: x.direction, amount: x.amount, createdAt: x.createdAt };
+    }),
+    journalPayments: readAll('JournalPayments').filter(function (x) {
+      return x.kind === 'party' && x.partyId === link.partyId;
+    }).map(function (x) {
+      return { id: x.id, journalId: x.journalId, amount: x.amount, date: x.date, method: x.method, createdAt: x.createdAt };
+    })
   };
 }
 
