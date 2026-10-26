@@ -8,7 +8,7 @@ import {
   money, r2, fmtDate, qty, BUCKET_META,
 } from '../lib/format.js';
 import {
-  billStates, partyLedger, whPartyKhata, whPartyTotals,
+  billStates, partyLedger, journalFieldList, whPartyKhata, whPartyTotals,
 } from '../lib/calc.js';
 import {
   Button, Empty, Field, Input, Money, Pill,
@@ -146,6 +146,56 @@ function FullStatement({ data, onBill }) {
   );
 }
 
+/** The shop's journal entries for this party: every field written down, and the money on those that carry any. */
+function JournalList({ data }) {
+  const entries = useMemo(() => [...(data.journal || [])]
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
+    .map((e) => {
+      const amount = r2(e.amount);
+      const settled = r2((data.journalPayments || []).filter((p) => p.journalId === e.id).reduce((s, p) => s + (Number(p.amount) || 0), 0));
+      return { ...e, amount, settled, left: r2(Math.max(0, amount - settled)), fields: journalFieldList(e) };
+    }), [data]);
+  return (
+    <div className="card" style={{ overflow: 'hidden' }}>
+      <div className="card-head"><h2 className="h2">Journal</h2></div>
+      {entries.length ? (
+        <div style={{ padding: 12, display: 'grid', gap: 10 }}>
+          {entries.map((e) => (
+            <div key={e.id} className="mcard" style={{ cursor: 'default' }}>
+              <div className="top">
+                <span className="name">{e.title || 'Journal entry'}</span>
+                {e.amount > 0 && <span className="amt" style={{ color: e.direction === 'take' ? 'var(--danger)' : 'var(--success)' }}>{money(e.amount)}</span>}
+              </div>
+              <div className="small muted">{fmtDate(e.date)}</div>
+              {e.fields.length > 0 && (
+                <table className="tbl" style={{ marginTop: 6 }}>
+                  <tbody>
+                    {e.fields.map((f, i) => (
+                      <tr key={i}>
+                        <td className="small muted" style={{ width: '38%' }}>{f.label}</td>
+                        <td style={{ fontWeight: 500 }}>{f.value}</td>
+                        <td className="r small">{Number(f.payment) > 0 ? money(f.payment) : ''}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              {e.amount > 0 && (
+                <div className="meta" style={{ marginTop: 6 }}>
+                  <span>{e.direction === 'take' ? 'You owe us' : 'We owe you'}</span>
+                  {e.settled > 0 && <span>{e.direction === 'take' ? 'Received' : 'Paid'} {money(e.settled)}</span>}
+                  <span className="spacer" />
+                  <span style={{ fontWeight: 700, color: e.left > 0 ? 'var(--danger)' : 'var(--success)' }}>{e.left > 0 ? `${money(e.left)} left` : 'Settled'}</span>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      ) : <Empty icon={ClipboardList} title="No journal entries" message="There are no journal entries on your account." />}
+    </div>
+  );
+}
+
 function Statement({ data }) {
   const [openId, setOpenId] = useState(null);
   const [view, setView] = useState('statement');
@@ -189,8 +239,10 @@ function Statement({ data }) {
         <div className="seg mb-2" style={{ marginBottom: 12 }}>
           <button className={view === 'statement' ? 'active' : ''} onClick={() => setView('statement')}>Full Statement</button>
           <button className={view === 'bills' ? 'active' : ''} onClick={() => setView('bills')}>Bills Only</button>
+          <button className={view === 'journal' ? 'active' : ''} onClick={() => setView('journal')}>Journal{(data.journal || []).length ? ` (${data.journal.length})` : ''}</button>
         </div>
         {view === 'statement' && <FullStatement data={data} onBill={setOpenId} />}
+        {view === 'journal' && <JournalList data={data} />}
         {view === 'bills' && <div className="card" style={{ overflow: 'hidden' }}>
           <div className="card-head"><h2 className="h2">Your Bills</h2></div>
           {bills.length ? (
