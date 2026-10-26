@@ -899,9 +899,31 @@ async function perform(action, p = {}) {
         .sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.billNo).localeCompare(String(b.billNo)));
       let left = r2(total);
       const applied = [];
+      const journalApplied = [];
       const groupId = uid('grp');
-      for (const b of bills) {
+      // Bills and the journal's "to collect" entries share one queue, oldest first
+      // (a bill comes before a journal entry of the same day). A cheque is not cash,
+      // so it only ever settles bills.
+      const queue = bills.map((b) => ({ kind: 'bill', date: String(b.date || ''), order: String(b.billNo || ''), b }));
+      if (method !== 'Cheque') {
+        journalClaims('party', p.partyId, db)
+          .filter((e) => e.direction === 'take' && e.outstanding > 0.004)
+          .forEach((e) => queue.push({ kind: 'journal', date: String(e.date || ''), order: String(e.createdAt || ''), e }));
+      }
+      queue.sort((a, b) => a.date.localeCompare(b.date) || (a.kind === b.kind ? a.order.localeCompare(b.order) : a.kind === 'bill' ? -1 : 1));
+      for (const item of queue) {
         if (left <= 0.004) break;
+        if (item.kind === 'journal') {
+          const use = r2(Math.min(item.e.outstanding, left));
+          db.journalPayments.push({
+            id: uid('jpy'), journalId: item.e.id, kind: 'party', partyId: p.partyId, direction: 'in', amount: use,
+            date, method, note: p.note || 'Account payment', createdAt: new Date().toISOString(), createdBy: getSession()?.username || 'system',
+          });
+          journalApplied.push({ journalId: item.e.id, title: item.e.title || 'Journal entry', amount: use });
+          left = r2(left - use);
+          continue;
+        }
+        const b = item.b;
         const st = billState(b, { payments: db.payments, returns: db.returns, cheques: db.cheques });
         // What is payable now: a cheque waiting to clear already covers its share.
         const due = payableNow(st);
@@ -921,9 +943,11 @@ async function perform(action, p = {}) {
         db.payments.push({ id, billId: '', partyId: p.partyId, method, amount: advance, date, note: 'Advance received', reversed: false, reversedAt: '', reverseReason: '', isAdvance: true, groupId });
         chequeFor(id, advance);
       }
-      log(db, 'payment', p.partyId, 'create', `Account payment ${r2(total)} — settled ${applied.length} bill${applied.length === 1 ? '' : 's'}` + (advance > 0 ? `, ${advance} held as advance` : ''));
+      log(db, 'payment', p.partyId, 'create', `Account payment ${r2(total)} — settled ${applied.length} bill${applied.length === 1 ? '' : 's'}`
+        + (journalApplied.length ? `, ${r2(journalApplied.reduce((s, x) => s + x.amount, 0))} against the journal` : '')
+        + (advance > 0 ? `, ${advance} held as advance` : ''));
       save();
-      return { applied, advance, total: r2(total) };
+      return { applied, journalApplied, advance, total: r2(total) };
     }
 
     /* ----- Returns ----- */

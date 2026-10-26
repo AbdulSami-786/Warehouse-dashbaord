@@ -3091,15 +3091,50 @@ function settleParty(p) {
     // Each bill's due is its own, so one read before writing serves them all.
     var book = dueBook();
 
-    for (var i = 0; i < mine.length && remaining > 0.004; i++) {
-      var due = book.due(mine[i]);
+    // Bills and the journal's "to take" entries share one queue, oldest first
+    // (a bill comes before a journal entry of the same day). A cheque is not
+    // cash, so it only ever settles bills. Mirrors settleParty in localAdapter.js.
+    var queue = mine.map(function (b) { return { kind: 'bill', date: String(b.date || ''), order: String(b.billNo || ''), b: b }; });
+    var journalApplied = [];
+    if (method !== 'Cheque') {
+      var paidOn = {};
+      readAll('JournalPayments').forEach(function (x) {
+        paidOn[x.journalId] = r2((paidOn[x.journalId] || 0) + (Number(x.amount) || 0));
+      });
+      readAll('Journal').forEach(function (e) {
+        if (e.kind !== 'party' || e.partyId !== p.partyId || e.direction !== 'take') return;
+        var outstanding = r2(Math.max(0, r2(e.amount) - (paidOn[e.id] || 0)));
+        if (outstanding <= 0.004) return;
+        queue.push({ kind: 'journal', date: String(e.date || ''), order: String(e.createdAt || ''), e: e, outstanding: outstanding });
+      });
+    }
+    queue.sort(function (a, b) {
+      return a.date.localeCompare(b.date) ||
+             (a.kind === b.kind ? a.order.localeCompare(b.order) : (a.kind === 'bill' ? -1 : 1));
+    });
+
+    for (var i = 0; i < queue.length && remaining > 0.004; i++) {
+      var item = queue[i];
+      if (item.kind === 'journal') {
+        var jUse = r2(Math.min(item.outstanding, remaining));
+        appendRow('JournalPayments', {
+          id: uid('jpy'), journalId: item.e.id, kind: 'party', partyId: p.partyId, direction: 'in',
+          amount: jUse, date: date, method: method, note: p.note || 'Account payment',
+          createdAt: nowISO(), createdBy: ACTING_USER
+        });
+        journalApplied.push({ journalId: item.e.id, title: item.e.title || 'Journal entry', amount: jUse });
+        remaining = r2(remaining - jUse);
+        continue;
+      }
+      var bill = item.b;
+      var due = book.due(bill);
       if (due <= 0.004) continue;
 
       var use = r2(Math.min(due, remaining));
       var payId = uid('pay');
       appendRow('Payments', {
         id: payId,
-        billId: mine[i].id,
+        billId: bill.id,
         partyId: p.partyId,
         method: method,
         amount: use,
@@ -3113,7 +3148,7 @@ function settleParty(p) {
       });
 
       chequeFor(payId, use);
-      applied.push({ billId: mine[i].id, billNo: mine[i].billNo, amount: use });
+      applied.push({ billId: bill.id, billNo: bill.billNo, amount: use });
       remaining = r2(remaining - use);
     }
 
@@ -3153,9 +3188,10 @@ function settleParty(p) {
     logActivity('payment', p.partyId, 'create',
       'Account payment ' + r2(total) + ' — settled ' + applied.length +
       ' bill' + (applied.length === 1 ? '' : 's') +
+      (journalApplied.length ? ', ' + r2(journalApplied.reduce(function (s, x) { return s + x.amount; }, 0)) + ' against the journal' : '') +
       (asAdvance > 0 ? ', ' + asAdvance + ' held as advance' : ''));
 
-    return { applied: applied, advance: asAdvance, total: r2(total) };
+    return { applied: applied, journalApplied: journalApplied, advance: asAdvance, total: r2(total) };
   });
 }
 

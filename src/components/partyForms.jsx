@@ -7,7 +7,7 @@ import { useApp } from '../lib/AppContext.jsx';
 import { api } from '../lib/api.js';
 import { CONFIG } from '../lib/config.js';
 import { money, r2, today, fmtDate, shareUrl } from '../lib/format.js';
-import { partyItemHistory, payableNow } from '../lib/calc.js';
+import { journalClaims, partyItemHistory, payableNow } from '../lib/calc.js';
 import { isLocked, markUnlocked, relock, tryUnlock } from '../lib/partyLock.js';
 import {
   Button, Card, Empty, Field, Input, Modal, Pill, Select,
@@ -131,33 +131,43 @@ export function PartyLockModal({ open, onClose, party, warehouse = false }) {
  * takes only what is payable now — a cheque still waiting to clear already
  * covers its share, and the server skips that part the same way.
  */
-function allocate(amount, bills) {
+function allocate(amount, targets) {
   let left = r2(Math.max(0, Number(amount) || 0));
   const rows = [];
-  for (const b of bills) {
+  for (const t of targets) {
     if (left <= 0.004) break;
-    const room = payableNow(b);
-    if (room <= 0.004) continue;
-    const use = r2(Math.min(room, left));
-    rows.push({ bill: b, amount: use, clears: use >= r2(room) - 0.004 });
+    const use = r2(Math.min(t.due, left));
+    rows.push({ target: t, amount: use, clears: use >= r2(t.due) - 0.004 });
     left = r2(left - use);
   }
   return { rows, advance: r2(left) };
 }
 
-/** Money received against a party's whole account. */
+/**
+ * Money received against a party's whole account. It settles the bills and the
+ * journal's "to collect" entries together, oldest first; only what is left over
+ * is kept as an advance. A cheque settles bills only — it is not cash yet.
+ */
 export function SettlePartyModal({ open, onClose, party, bills = [] }) {
-  const { methods, mutate } = useApp();
+  const { methods, mutate, data } = useApp();
   const [amount, setAmount] = useState('');
   const [method, setMethod] = useState('Cash');
   const [date, setDate] = useState(today());
   const [note, setNote] = useState('');
   const [cheque, setCheque] = useState(null);
   const [busy, setBusy] = useState(false);
-  const open_ = useMemo(() => bills.filter((b) => b.status !== 'voided' && payableNow(b) > 0.004)
-    .sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.billNo).localeCompare(String(b.billNo))), [bills]);
-  const owed = useMemo(() => r2(open_.reduce((s, b) => s + payableNow(b), 0)), [open_]);
-  const plan = useMemo(() => allocate(amount, open_), [amount, open_]);
+  const targets = useMemo(() => {
+    const list = bills.filter((b) => b.status !== 'voided' && payableNow(b) > 0.004)
+      .map((b) => ({ id: b.id, kind: 'bill', label: b.billNo, date: String(b.date || ''), order: String(b.billNo || ''), due: payableNow(b) }));
+    if (method !== 'Cheque' && party) {
+      journalClaims('party', party.id, data)
+        .filter((e) => e.direction === 'take' && e.outstanding > 0.004)
+        .forEach((e) => list.push({ id: e.id, kind: 'journal', label: e.title || 'Journal entry', date: String(e.date || ''), order: String(e.createdAt || ''), due: e.outstanding }));
+    }
+    return list.sort((a, b) => a.date.localeCompare(b.date) || (a.kind === b.kind ? a.order.localeCompare(b.order) : a.kind === 'bill' ? -1 : 1));
+  }, [bills, data, party, method]);
+  const owed = useMemo(() => r2(targets.reduce((s, t) => s + t.due, 0)), [targets]);
+  const plan = useMemo(() => allocate(amount, targets), [amount, targets]);
   const amt = r2(Number(amount) || 0);
   const reset = () => {
     setAmount('');
@@ -173,7 +183,8 @@ export function SettlePartyModal({ open, onClose, party, bills = [] }) {
       const res = await mutate(() => api.settleParty({ partyId: party.id, amount: amt, method, date, note, cheque: method === 'Cheque' ? cheque : undefined }), null);
       const n = res?.applied?.length ?? 0;
       const adv = res?.advance ?? 0;
-      onClose(`${money(amt)} received — ${n} bill${n === 1 ? '' : 's'} settled` + (adv > 0 ? `, ${money(adv)} kept as advance` : ''));
+      const jn = (res?.journalApplied || []).reduce((s, x) => s + x.amount, 0);
+      onClose(`${money(amt)} received — ${n} bill${n === 1 ? '' : 's'} settled` + (jn > 0 ? `, ${money(jn)} taken off the journal` : '') + (adv > 0 ? `, ${money(adv)} kept as advance` : ''));
       reset();
     } catch { /* toasted */ } finally {
       setBusy(false);
@@ -205,33 +216,33 @@ export function SettlePartyModal({ open, onClose, party, bills = [] }) {
       {amt > 0 && (
         <>
           <h3 className="h3" style={{ marginTop: 16, marginBottom: 7 }}>How this will be applied</h3>
-          {open_.length ? (
+          {targets.length ? (
             <div className="table-wrap">
               <table className="tbl">
-                <thead><tr><th>Bill</th><th>Date</th><th className="r">Due</th><th className="r">Applied</th><th className="r">Left</th></tr></thead>
+                <thead><tr><th>Bill / Journal</th><th>Date</th><th className="r">Due</th><th className="r">Applied</th><th className="r">Left</th></tr></thead>
                 <tbody>
-                  {plan.rows.map(({ bill, amount: a, clears }) => (
-                    <tr key={bill.id}>
-                      <td style={{ fontWeight: 600 }}>{bill.billNo}</td>
-                      <td className="nowrap small">{fmtDate(bill.date)}</td>
-                      <td className="r">{money(payableNow(bill))}</td>
+                  {plan.rows.map(({ target: t, amount: a, clears }) => (
+                    <tr key={`${t.kind}-${t.id}`}>
+                      <td style={{ fontWeight: 600 }}>{t.kind === 'journal' ? <>{t.label} <span className="pill pill-partial">Journal</span></> : t.label}</td>
+                      <td className="nowrap small">{fmtDate(t.date)}</td>
+                      <td className="r">{money(t.due)}</td>
                       <td className="r strong" style={{ color: 'var(--success)' }}>{money(a)}</td>
-                      <td className="r" style={{ color: clears ? 'var(--success)' : 'var(--danger)', fontWeight: 600 }}>{clears ? 'PAID' : money(r2(payableNow(bill) - a))}</td>
+                      <td className="r" style={{ color: clears ? 'var(--success)' : 'var(--danger)', fontWeight: 600 }}>{clears ? 'PAID' : money(r2(t.due - a))}</td>
                     </tr>
                   ))}
-                  {open_.filter((b) => !plan.rows.some((x) => x.bill.id === b.id)).map((b) => (
-                    <tr key={b.id} className="muted">
-                      <td>{b.billNo}</td><td className="nowrap small">{fmtDate(b.date)}</td>
-                      <td className="r">{money(payableNow(b))}</td><td className="r">—</td><td className="r">{money(payableNow(b))}</td>
+                  {targets.filter((t) => !plan.rows.some((x) => x.target.id === t.id)).map((t) => (
+                    <tr key={`${t.kind}-${t.id}`} className="muted">
+                      <td>{t.label}{t.kind === 'journal' && ' (journal)'}</td><td className="nowrap small">{fmtDate(t.date)}</td>
+                      <td className="r">{money(t.due)}</td><td className="r">—</td><td className="r">{money(t.due)}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
           ) : (
-            <div className="note"><Info size={14} /><span>This party has no unpaid bills, so the whole {money(amt)} will be held as an advance against their next bill.</span></div>
+            <div className="note"><Info size={14} /><span>This party has no unpaid bills or journal amounts, so the whole {money(amt)} will be held as an advance against their next bill.</span></div>
           )}
-          {plan.advance > 0 && open_.length > 0 && (
+          {plan.advance > 0 && targets.length > 0 && (
             <div className="note" style={{ marginTop: 10 }}>
               <Wallet size={14} />
               <span><strong>{money(plan.advance)}</strong> is more than this party owes. It will be kept as an advance, and offered on their next bill.</span>
