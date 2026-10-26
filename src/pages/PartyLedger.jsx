@@ -9,7 +9,7 @@ import { api } from '../lib/api.js';
 import { money, r2, fmtDate, BUCKET_META, whatsappUrl } from '../lib/format.js';
 import {
   billStates, isOpeningBill, partyCredit, advanceAvailable, partyPendingCheques, reorderSuggestion, combinedPartyLedger,
-  ledgerFilterMatch, LEDGER_FILTERS, supplierForParty, supplierBalance, SYSTEM_METHODS, journalOwed,
+  ledgerFilterMatch, LEDGER_FILTERS, supplierForParty, supplierBalance, SYSTEM_METHODS, journalOwed, partName,
 } from '../lib/calc.js';
 import { exportCSV, printReport, billPDF, raw, esc } from '../lib/exporters.js';
 import { canOpen, isLocked, relock } from '../lib/partyLock.js';
@@ -314,7 +314,7 @@ function PartyLedger({ onRelock }) {
                             {r.parts && (openGroups[r.id] ? <ChevronDown size={13} style={{ verticalAlign: -2 }} /> : <ChevronRight size={13} style={{ verticalAlign: -2 }} />)}
                             {r.parts && ' '}
                             {r.side === 'purchase' && <><Pill status="partial" label="Purchase" />{' '}</>}
-                            {r.isPart ? `↳ Bill ${r.billNo || ''}` : r.title}
+                            {r.isPart ? `↳ ${partName(r)}` : r.title}
                           </div>
                           {r.detail && <div className="small muted">{r.detail}</div>}
                         </td>
@@ -351,7 +351,7 @@ function PartyLedger({ onRelock }) {
                     onClick={() => { if (r.parts) setOpenGroups((g) => ({ ...g, [r.id]: !g[r.id] })); }}
                   >
                     <div className="top">
-                      <span className="name" style={{ textDecoration: r.voided ? 'line-through' : 'none' }}>{r.isPart ? `↳ Bill ${r.billNo || ''}` : r.title}</span>
+                      <span className="name" style={{ textDecoration: r.voided ? 'line-through' : 'none' }}>{r.isPart ? `↳ ${partName(r)}` : r.title}</span>
                       <span className="amt" style={{ color: r.debit > 0 ? 'var(--danger)' : r.pending > 0 ? '#B45309' : 'var(--success)' }}>
                         {r.debit > 0 ? `+${money(r.debit)}` : r.credit > 0 ? `−${money(r.credit)}` : r.pending > 0 ? `(${money(r.pending)})` : '—'}
                       </span>
@@ -361,7 +361,7 @@ function PartyLedger({ onRelock }) {
                       <span>{fmtDate(r.date)}</span>
                       {r.method && <Pill status="neutral" label={r.method} />}
                       <span className="spacer" />
-                      {r.parts && <span className="small" style={{ fontWeight: 600 }}>{openGroups[r.id] ? 'Hide bills' : `${r.parts.length} bills`}</span>}
+                      {r.parts && <span className="small" style={{ fontWeight: 600 }}>{openGroups[r.id] ? 'Hide parts' : `${r.parts.length} parts`}</span>}
                       {!r.isPart && <span style={{ fontWeight: 700 }}>Bal {money(r.balance)}</span>}
                     </div>
                     {(r.billId || (r.paymentId && !r.reversed) || r.chequeId || r.supplierPaymentId) && (

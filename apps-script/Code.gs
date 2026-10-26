@@ -106,8 +106,10 @@ var SCHEMA = {
   Journal: ['id', 'kind', 'partyId', 'date', 'title', 'fields', 'createdAt', 'createdBy', 'updatedAt',
             'direction', 'amount'],
   // direction: 'in' = collected from the party, 'out' = paid to the party.
+  // groupId appended: set when the money came in through one account payment that
+  // also cleared bills, so the ledger can show the whole receipt as one entry.
   JournalPayments: ['id', 'journalId', 'kind', 'partyId', 'direction', 'amount', 'date', 'method', 'note',
-                    'createdAt', 'createdBy'],
+                    'createdAt', 'createdBy', 'groupId'],
   ActivityLog: ['id', 'entityType', 'entityId', 'action', 'description', 'oldValue',
                 'newValue', 'user', 'timestamp'],
   // pages/status/name/createdAt appended: which screens a user may open (a JSON
@@ -205,7 +207,7 @@ var BOOLEAN = { reversed: 1, restock: 1, active: 1, isAdvance: 1 };
  * was not updated (Deploy > Manage deployments > edit > New version > Deploy).
  * Keep in step with package.json.
  */
-var BACKEND_VERSION = '2.7.5';
+var BACKEND_VERSION = '2.7.7';
 
 function doGet(e) {
   return json({ ok: true, data: { status: 'SGA Balloon Merchant backend is running', version: BACKEND_VERSION } });
@@ -3120,7 +3122,7 @@ function settleParty(p) {
         appendRow('JournalPayments', {
           id: uid('jpy'), journalId: item.e.id, kind: 'party', partyId: p.partyId, direction: 'in',
           amount: jUse, date: date, method: method, note: p.note || 'Account payment',
-          createdAt: nowISO(), createdBy: ACTING_USER
+          createdAt: nowISO(), createdBy: ACTING_USER, groupId: groupId
         });
         journalApplied.push({ journalId: item.e.id, title: item.e.title || 'Journal entry', amount: jUse });
         remaining = r2(remaining - jUse);
@@ -5098,7 +5100,7 @@ function openSharedLedger(p) {
     journalPayments: readAll('JournalPayments').filter(function (x) {
       return x.kind === 'party' && x.partyId === link.partyId;
     }).map(function (x) {
-      return { id: x.id, journalId: x.journalId, amount: x.amount, date: x.date, method: x.method, createdAt: x.createdAt };
+      return { id: x.id, journalId: x.journalId, amount: x.amount, date: x.date, method: x.method, note: x.note, groupId: x.groupId, createdAt: x.createdAt };
     })
   };
 }

@@ -917,7 +917,7 @@ async function perform(action, p = {}) {
           const use = r2(Math.min(item.e.outstanding, left));
           db.journalPayments.push({
             id: uid('jpy'), journalId: item.e.id, kind: 'party', partyId: p.partyId, direction: 'in', amount: use,
-            date, method, note: p.note || 'Account payment', createdAt: new Date().toISOString(), createdBy: getSession()?.username || 'system',
+            date, method, note: p.note || 'Account payment', createdAt: new Date().toISOString(), createdBy: getSession()?.username || 'system', groupId,
           });
           journalApplied.push({ journalId: item.e.id, title: item.e.title || 'Journal entry', amount: use });
           left = r2(left - use);
@@ -1532,7 +1532,7 @@ async function perform(action, p = {}) {
           .map((x) => ({ id: x.id, kind: x.kind, partyId: x.partyId, date: x.date, title: x.title, fields: x.fields, direction: x.direction, amount: x.amount, createdAt: x.createdAt })),
         journalPayments: (db.journalPayments || [])
           .filter((x) => x.kind === 'party' && x.partyId === link.partyId)
-          .map((x) => ({ id: x.id, journalId: x.journalId, amount: x.amount, date: x.date, method: x.method, createdAt: x.createdAt })),
+          .map((x) => ({ id: x.id, journalId: x.journalId, amount: x.amount, date: x.date, method: x.method, note: x.note, groupId: x.groupId, createdAt: x.createdAt })),
       };
     }
 

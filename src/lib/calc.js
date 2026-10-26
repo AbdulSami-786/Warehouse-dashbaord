@@ -597,8 +597,10 @@ function idTime(id) {
  * Payments that are parts of one receipt. New ones share a groupId; older
  * account payments are recognised by being written within two seconds of each
  * other on the same day, method and note, each against a different bill.
+ * Journal payments that carry the same groupId belong to the receipt too, so a
+ * payment that cleared a bill and a journal amount is still one group.
  */
-function paymentGroups(payments) {
+function paymentGroups(payments, journalPays = []) {
   const keyOf = new Map();
   const groups = new Map();
   const add = (k, id) => {
@@ -610,6 +612,7 @@ function paymentGroups(payments) {
     if (p.groupId) add(`g:${p.groupId}`, p.id);
     else if (p.billId && !p.isAdvance && Number.isFinite(idTime(p.id))) legacy.push(p);
   }
+  for (const jp of journalPays) if (jp.groupId) add(`g:${jp.groupId}`, jp.id);
   legacy.sort((a, b) => idTime(a.id) - idTime(b.id));
   let run = [];
   const flush = () => {
@@ -684,10 +687,17 @@ export function journalRows(kind, partyId, data = {}) {
         title: take ? 'Collected — journal' : 'Paid — journal',
         detail: [e.title, p.note].filter(Boolean).join(' · '), method: p.method || '',
         debit: take ? 0 : amount, credit: take ? amount : 0,
+        // Used when this is one part of a receipt that also cleared bills.
+        groupId: p.groupId || '', originalAmount: amount, partLabel: `Journal — ${e.title || 'entry'}`, noteText: p.note || '',
       });
     });
   });
   return rows;
+}
+
+/** What one part of a grouped receipt went against: a bill or a journal entry. */
+export function partName(part) {
+  return part.partLabel || `Bill ${part.billNo || '?'}`;
 }
 
 /** Fold the parts of one grouped receipt into a single ledger line. */
@@ -696,8 +706,8 @@ function collapseGroups(rows) {
   const out = [];
   const seenInfo = new Set();
   for (const r of rows) {
-    if (r.groupKey && r.paymentId && !r.isAdvance) {
-      const k = `${r.groupKey}|${r.type}|${r.struck ? 1 : 0}|${r.date}`;
+    if (r.groupKey && (r.paymentId || r.type === 'jpay') && !r.isAdvance) {
+      const k = `${r.groupKey}|${r.type === 'jpay' ? 'payment' : r.type}|${r.struck ? 1 : 0}|${r.date}`;
       if (!parts.has(k)) {
         parts.set(k, []);
         out.push({ __group: k });
@@ -718,10 +728,12 @@ function collapseGroups(rows) {
     if (g.length === 1) return g[0];
     const first = g[0];
     const total = r2(g.reduce((s, x) => s + (x.originalAmount || 0), 0));
-    const split = g.map((x) => `Bill ${x.billNo || '?'}: ${rs(x.originalAmount)}`);
+    const split = g.map((x) => `${partName(x)}: ${rs(x.originalAmount)}`);
     const notes = [...new Set(g.map((x) => x.noteText).filter(Boolean))];
+    const viaJournal = first.type === 'jpay';
     return {
-      id: `grp-${g[0].id}`, date: first.date, type: first.type, title: first.title,
+      id: `grp-${g[0].id}`, date: first.date, type: viaJournal ? 'payment' : first.type,
+      title: viaJournal ? `Payment — ${first.method}` : first.title,
       detail: [split.join(', ') + ` = ${rs(total)}`, first.chequeText, ...notes].filter(Boolean).join(' · '),
       method: first.method, ref: first.ref, debit: 0,
       credit: r2(g.reduce((s, x) => s + (x.credit || 0), 0)),
@@ -773,7 +785,8 @@ export function partyLedger(partyId, data = {}, from = null, to = null) {
   });
 
   const partyPays = payments.filter((p) => p.partyId === partyId && !p.isOpening);
-  const groups = paymentGroups(partyPays);
+  const partyJournalPays = journalClaims('party', partyId, data).flatMap((c) => c.pays);
+  const groups = paymentGroups(partyPays, partyJournalPays);
   partyPays.forEach((p) => {
     const bill = p.billId ? billById.get(p.billId) : null;
     const chq = cheques.find((c) => c.paymentId === p.id);
@@ -857,7 +870,8 @@ export function partyLedger(partyId, data = {}, from = null, to = null) {
     });
   });
 
-  journalRows('party', partyId, data).filter((r) => within(r.date)).forEach((r) => rows.push(r));
+  journalRows('party', partyId, data).filter((r) => within(r.date))
+    .forEach((r) => rows.push(r.type === 'jpay' && r.groupId ? { ...r, groupKey: groups.get(r.journalPaymentId) || null } : r));
 
   const folded = collapseGroups(rows);
   const order = { bill: 0, journal: 0, payment: 1, jpay: 1, advance: 1, 'cheque-pending': 1, return: 2, reversal: 3, bounced: 3, void: 4, info: 5 };

@@ -8,7 +8,7 @@ import {
   money, r2, fmtDate, qty, BUCKET_META,
 } from '../lib/format.js';
 import {
-  billStates, partyLedger, journalFieldList, whPartyKhata, whPartyTotals,
+  billStates, partyLedger, journalFieldList, whPartyKhata, whPartyTotals, partName,
 } from '../lib/calc.js';
 import {
   Button, Empty, Field, Input, Money, Pill,
@@ -89,7 +89,7 @@ function FullStatement({ data, onBill }) {
                       <div style={{ fontWeight: r.isPart ? 500 : 600, textDecoration: r.voided ? 'line-through' : 'none' }}>
                         {r.parts && (openGroups[r.id] ? <ChevronDown size={13} style={{ verticalAlign: -2 }} /> : <ChevronRight size={13} style={{ verticalAlign: -2 }} />)}
                         {r.parts && ' '}
-                        {r.isPart ? `↳ Bill ${r.billNo || ''}` : r.title}
+                        {r.isPart ? `↳ ${partName(r)}` : r.title}
                       </div>
                       {r.detail && <div className="small muted">{r.detail}</div>}
                     </td>
@@ -124,7 +124,7 @@ function FullStatement({ data, onBill }) {
                 onClick={() => open(r)}
               >
                 <div className="top">
-                  <span className="name" style={{ textDecoration: r.voided ? 'line-through' : 'none' }}>{r.isPart ? `↳ Bill ${r.billNo || ''}` : r.title}</span>
+                  <span className="name" style={{ textDecoration: r.voided ? 'line-through' : 'none' }}>{r.isPart ? `↳ ${partName(r)}` : r.title}</span>
                   <span className="amt" style={{ color: r.debit > 0 ? 'var(--danger)' : r.pending > 0 ? '#B45309' : 'var(--success)' }}>
                     {r.debit > 0 ? `+${money(r.debit)}` : r.credit > 0 ? `−${money(r.credit)}` : r.pending > 0 ? `(${money(r.pending)})` : '—'}
                   </span>
@@ -134,7 +134,7 @@ function FullStatement({ data, onBill }) {
                   <span>{fmtDate(r.date)}</span>
                   {r.method && <Pill status="neutral" label={r.method} />}
                   <span className="spacer" />
-                  {r.parts && <span className="small" style={{ fontWeight: 600 }}>{openGroups[r.id] ? 'Hide bills' : `${r.parts.length} bills`}</span>}
+                  {r.parts && <span className="small" style={{ fontWeight: 600 }}>{openGroups[r.id] ? 'Hide parts' : `${r.parts.length} parts`}</span>}
                   {!r.isPart && <span style={{ fontWeight: 700 }}>Bal {money(r.balance)}</span>}
                 </div>
               </div>
