@@ -1072,11 +1072,12 @@ export function combinedSupplierLedger(supplierId, data = {}, from = null, to = 
 
 export const LEDGER_FILTERS = [
   { value: 'all', label: 'All' },
-  { value: 'sales', label: 'Sales' },
+  { value: 'sales', label: 'Bills' },
   { value: 'purchases', label: 'Purchases' },
   { value: 'received', label: 'Received' },
   { value: 'paid', label: 'Paid' },
   { value: 'returns', label: 'Returns' },
+  { value: 'journal', label: 'Journal' },
   { value: 'cheques', label: 'Cheques' },
 ];
 
@@ -1084,7 +1085,8 @@ function ledgerKind(row, { supplierView = false } = {}) {
   const t = String(row?.type || '');
   const buying = row?.side === 'purchase' || t.startsWith('sup-') || (supplierView && row?.side !== 'sale');
   const base = t.replace(/^(sup|sale)-/, '');
-  if (base === 'opening' || base === 'journal' || base === 'jpay') return 'other';
+  if (base === 'journal' || base === 'jpay') return 'journal';
+  if (base === 'opening') return 'other';
   if (buying) {
     if (base === 'purchase' || base === 'void') return 'purchases';
     if (base === 'payment') return 'paid';
@@ -1102,6 +1104,7 @@ export function ledgerFilterMatch(row, filter, opts) {
     const t = String(row?.type || '');
     return !!row?.chequeId || /cheque-pending|bounced/.test(t) || (/info/.test(t) && /^Cheque/.test(row?.title || ''));
   }
+  if (filter === 'journal' && row?.parts?.some((p) => p.type === 'jpay')) return true;
   return ledgerKind(row, opts) === filter;
 }
 

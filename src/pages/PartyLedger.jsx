@@ -125,14 +125,16 @@ function PartyLedger({ onRelock }) {
       [`${settings.shopName} — Party Ledger`, party.name, party.phone || '', `Outstanding: ${money(totals.due)}`, ...netMeta]);
     toast('Ledger exported');
   };
-  const exportPDF = () => printReport({
+  // The bills table: every bill with what was paid and what is due.
+  const billsPDF = () => printReport({
     title: 'Party Ledger', subtitle: `${party.name}${party.phone ? ` · ${party.phone}` : ''}`, shopName: settings.shopName,
     headers: ['Bill No', 'Date', 'Status', { label: 'Total', align: 'r' }, { label: 'Paid', align: 'r' }, { label: 'Due', align: 'r' }, 'Due Date'],
     rows: bills.map((b) => [b.billNo, fmtDate(b.date), raw(`<span class="pill pill-${esc(b.status)}">${esc(b.status)}</span>`), money(b.net), money(b.paid), money(b.due), b.due > 0 ? fmtDate(b.dueDate) : '—']),
     totals: ['', '', 'Total', money(totals.billed), money(totals.paid), money(totals.due), ''],
     meta: [...(totals.advance > 0 ? [`Advance balance: ${money(totals.advance)}`] : []), ...netMeta],
   });
-  const printStatement = () => printReport({
+  // The statement as filtered: everything, or only bills, payments, journal…
+  const printStatement = () => filter === 'sales' ? billsPDF() : printReport({
     title: filter === 'all' ? 'Account Statement' : `Account Statement — ${LEDGER_FILTERS.find((f) => f.value === filter)?.label}`,
     subtitle: `${party.name}${party.phone ? ` · ${party.phone}` : ''}`, shopName: settings.shopName,
     headers: ['Date', 'Particulars', 'Method', { label: 'Debit', align: 'r' }, { label: 'Credit', align: 'r' }, { label: 'Balance', align: 'r' }],
@@ -144,7 +146,7 @@ function PartyLedger({ onRelock }) {
       r.credit > 0 ? money(r.credit) : r.pending > 0 ? `(${money(r.pending)})` : '—',
       money(r.balance),
     ]),
-    totals: ['', 'Closing balance', '', money(shown.reduce((s, r) => s + r.debit, 0)), money(shown.reduce((s, r) => s + r.credit, 0)), money(closing)],
+    totals: ['', filter === 'all' ? 'Closing balance' : 'Total shown · closing balance', '', money(shown.reduce((s, r) => s + r.debit, 0)), money(shown.reduce((s, r) => s + r.credit, 0)), money(closing)],
   });
   const buyFrom = async () => {
     if (linking) return;
@@ -188,7 +190,7 @@ function PartyLedger({ onRelock }) {
     <>
       <PageHead title={party.name} subtitle={[party.phone, party.address].filter(Boolean).join(' · ') || 'Party ledger'}>
         <Button icon={Download} onClick={exportExcel}>Excel</Button>
-        <Button icon={Printer} onClick={exportPDF}>PDF</Button>
+        <Button icon={Printer} onClick={printStatement}>PDF</Button>
         <Button icon={Search} onClick={() => setPricesOpen(true)}>Item Prices</Button>
         <Button icon={Share2} onClick={() => setShareOpen(true)}>Share</Button>
         {isLocked(party) && <Button icon={Lock} onClick={onRelock} title="Close and lock this ledger now">Lock now</Button>}
