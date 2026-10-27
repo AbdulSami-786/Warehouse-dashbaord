@@ -5,14 +5,23 @@ import {
 } from 'lucide-react';
 import { useApp } from '../lib/AppContext.jsx';
 import { money, r2, fmtDate, norm, BUCKETS, BUCKET_META, whatsappUrl } from '../lib/format.js';
-import { billStates } from '../lib/calc.js';
+import { billStates, owingItems } from '../lib/calc.js';
 import { exportCSV, printReport } from '../lib/exporters.js';
 import {
   Button, Card, Empty, Field, Input, Money, PageHead, Pill, SearchBox, Stat,
 } from '../components/ui.jsx';
 
+/** A party's open items are bills and journal entries; say how many of each. */
+function itemsText(g) {
+  const j = g.bills.filter((b) => b.isJournal).length;
+  const n = g.bills.length - j;
+  return [n && `${n} bill${n === 1 ? '' : 's'}`, j && `${j} journal`].filter(Boolean).join(' + ');
+}
+
+const itemLabel = (b) => (b.isJournal ? `Journal — ${b.billNo}` : b.billNo);
+
 function reminder(shopName, row) {
-  return `Assalam-o-Alaikum ${row.party.name}, ${shopName} se. Aap ka total ${money(row.due)} outstanding hai (${row.bills.length} bill). Meherbani karke payment clear karwa dein. Shukriya.`;
+  return `Assalam-o-Alaikum ${row.party.name}, ${shopName} se. Aap ka total ${money(row.due)} outstanding hai (${itemsText(row)}). Meherbani karke payment clear karwa dein. Shukriya.`;
 }
 
 export default function Outstanding() {
@@ -25,7 +34,7 @@ export default function Outstanding() {
 
   const { groups, totals, rows } = useMemo(() => {
     const s = norm(q);
-    const owing = billStates(data.bills, data).filter((b) => b.status !== 'voided' && b.due > 0);
+    const owing = owingItems(data, billStates(data.bills, data));
     const byParty = new Map();
     owing.forEach((b) => {
       const party = data.parties.find((p) => p.id === b.partyId);
@@ -46,15 +55,21 @@ export default function Outstanding() {
     return {
       groups: sums,
       rows: list,
-      totals: { due: r2(list.reduce((t, g) => t + g.due, 0)), parties: list.length, bills: list.reduce((t, g) => t + g.bills.length, 0) },
+      totals: {
+        due: r2(list.reduce((t, g) => t + g.due, 0)),
+        parties: list.length,
+        bills: list.reduce((t, g) => t + g.bills.filter((b) => !b.isJournal).length, 0),
+        journal: list.reduce((t, g) => t + g.bills.filter((b) => b.isJournal).length, 0),
+      },
     };
   }, [data, q, minDays, minAmount]);
+  const countText = `${totals.bills} bill${totals.bills === 1 ? '' : 's'}${totals.journal ? ` + ${totals.journal} journal` : ''}`;
 
   const toExcel = () => {
     const out = [];
     rows.forEach((g) => {
       [...g.bills].sort((a, b) => b.overdueDays - a.overdueDays).forEach((b) => out.push([
-        g.party.name, g.party.phone || '', b.billNo, fmtDate(b.date), fmtDate(b.dueDate), Math.max(0, b.overdueDays), BUCKET_META[b.bucket].label, b.due.toFixed(2),
+        g.party.name, g.party.phone || '', itemLabel(b), fmtDate(b.date), b.isJournal ? '' : fmtDate(b.dueDate), Math.max(0, b.overdueDays), BUCKET_META[b.bucket].label, b.due.toFixed(2),
       ]));
     });
     exportCSV('Outstanding', ['Party', 'Phone', 'Bill No', 'Bill Date', 'Due Date', 'Days Overdue', 'Bucket', 'Amount Due'], out, [
@@ -64,7 +79,7 @@ export default function Outstanding() {
     toast('Outstanding report exported');
   };
   const toPDF = () => printReport({
-    title: 'Outstanding Report', subtitle: `${totals.parties} parties · ${totals.bills} bills`, shopName: settings.shopName,
+    title: 'Outstanding Report', subtitle: `${totals.parties} parties · ${countText}`, shopName: settings.shopName,
     headers: ['Party', 'Phone', { label: '0–7 days', align: 'r' }, { label: '8–30 days', align: 'r' }, { label: '30+ days', align: 'r' }, { label: 'Total Due', align: 'r' }],
     rows: rows.map((g) => [g.party.name, g.party.phone || '—',
       g.buckets['0-7'] ? money(g.buckets['0-7']) : '—', g.buckets['8-30'] ? money(g.buckets['8-30']) : '—', g.buckets['30+'] ? money(g.buckets['30+']) : '—', money(g.due)]),
@@ -74,7 +89,7 @@ export default function Outstanding() {
 
   return (
     <>
-      <PageHead title="Outstanding" subtitle={`${totals.parties} ${totals.parties === 1 ? 'party owes' : 'parties owe'} ${money(totals.due)} across ${totals.bills} bills`}>
+      <PageHead title="Outstanding" subtitle={`${totals.parties} ${totals.parties === 1 ? 'party owes' : 'parties owe'} ${money(totals.due)} across ${countText}`}>
         <SearchBox value={q} onChange={setQ} placeholder="Search party…" />
         <Button icon={Download} onClick={toExcel}>Excel</Button>
         <Button icon={Printer} onClick={toPDF}>PDF</Button>
@@ -131,11 +146,15 @@ export default function Outstanding() {
                         </td>
                       </tr>
                       {open[g.party.id] && [...g.bills].sort((a, b) => b.overdueDays - a.overdueDays).map((b) => (
-                        <tr key={b.id} className={`clickable ${BUCKET_META[b.bucket].cls}`} onClick={() => navigate(`/bill/${b.id}`)}>
+                        <tr key={b.id} className={`clickable ${BUCKET_META[b.bucket].cls}`} onClick={() => navigate(b.isJournal ? `/party/${b.partyId}` : `/bill/${b.id}`)}>
                           <td />
-                          <td colSpan={2} style={{ paddingLeft: 30 }}><span style={{ fontWeight: 500 }}>{b.billNo}</span><span className="small muted"> · {fmtDate(b.date)}</span></td>
-                          <td className="r small">{b.overdueDays > 0 ? `${b.overdueDays}d late` : 'Not due'}</td>
-                          <td colSpan={3} className="small muted">Due {fmtDate(b.dueDate)} · <Pill status={b.status} /></td>
+                          <td colSpan={2} style={{ paddingLeft: 30 }}><span style={{ fontWeight: 500 }}>{itemLabel(b)}</span><span className="small muted"> · {fmtDate(b.date)}</span></td>
+                          <td className="r small">{b.isJournal ? (b.overdueDays > 0 ? `${b.overdueDays}d old` : 'New') : b.overdueDays > 0 ? `${b.overdueDays}d late` : 'Not due'}</td>
+                          <td colSpan={3} className="small muted">
+                            {b.isJournal
+                              ? <>To take, from the journal · <Pill status="neutral" label="Journal" /></>
+                              : <>Due {fmtDate(b.dueDate)} · <Pill status={b.status} /></>}
+                          </td>
                           <td className="r"><Money value={b.due} /></td>
                           <td />
                         </tr>
@@ -161,7 +180,7 @@ export default function Outstanding() {
                     <div className="top"><span className="name">{g.party.name}</span><span className="amt" style={{ color: 'var(--danger)' }}>{money(g.due)}</span></div>
                     <div className="meta">
                       <Pill status={worst === '30+' ? 'overdue' : 'partial'} label={BUCKET_META[worst].label} />
-                      <span>{g.bills.length} bill{g.bills.length === 1 ? '' : 's'}</span>
+                      <span>{itemsText(g)}</span>
                       {g.oldestDays > 0 && <span>{g.oldestDays}d oldest</span>}
                     </div>
                     {g.party.phone && (

@@ -7,7 +7,7 @@ import {
   Cloud, CloudOff, RefreshCw, TriangleAlert,
 } from 'lucide-react';
 import { useApp } from '../lib/AppContext.jsx';
-import { billStates, partyDue } from '../lib/calc.js';
+import { owingItems } from '../lib/calc.js';
 import { exportBackup } from '../lib/exporters.js';
 import { Button, Modal, Skeleton, Toasts } from './ui.jsx';
 import { CloseToday } from './forms.jsx';
@@ -252,8 +252,8 @@ export default function Layout() {
   const location = useLocation();
   const [closing, setClosing] = useState(false);
   const owing = useMemo(() => {
-    const states = billStates(data.bills, data);
-    return data.parties.filter((p) => partyDue(p.id, states) > 0).length;
+    const ids = new Set(owingItems(data).map((i) => i.partyId));
+    return data.parties.filter((p) => ids.has(p.id)).length;
   }, [data]);
   const title = useMemo(() => {
     for (const g of SHOP_NAV) {

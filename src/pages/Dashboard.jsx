@@ -11,7 +11,7 @@ import {
   money, r2, fmtDate, daysSince, pctChange, rangeFor, inRange, rangeLabel, isoDate, BUCKET_META, whatsappUrl,
 } from '../lib/format.js';
 import {
-  billStates, collectedPayments, grossProfit, isOpeningBill, itemStock, methodBalances, partyDue, reorderSuggestion,
+  billStates, collectedPayments, grossProfit, isOpeningBill, itemStock, methodBalances, owingItems, partyDue, reorderSuggestion,
 } from '../lib/calc.js';
 import { exportBackup } from '../lib/exporters.js';
 import {
@@ -38,7 +38,7 @@ export default function Dashboard() {
     const sales = r2(inPeriod.reduce((s, b) => s + b.net, 0));
     const collections = r2(collectedPayments(data.payments, data.cheques).filter((p) => inRange(p.date, range.from, range.to)).reduce((s, p) => s + (Number(p.amount) || 0), 0));
     const cashInHand = r2(methodBalances(methods, data).reduce((s, b) => s + b.balance, 0));
-    const outstanding = r2(live.reduce((s, b) => s + b.due, 0));
+    const outstanding = r2(owingItems(data, states).reduce((s, b) => s + b.due, 0));
     const ids = new Set(inPeriod.map((b) => b.id));
     const profit = grossProfit(data.billItems.filter((l) => ids.has(l.billId)), data.bills);
     return { sales, collections, cashInHand, outstanding, profit, billCount: inPeriod.length };
@@ -69,12 +69,11 @@ export default function Dashboard() {
     .sort((a, b) => b.overdueDays - a.overdueDays).slice(0, 6), [states, data.parties]);
   const aging = useMemo(() => {
     const out = { '0-7': 0, '8-30': 0, '30+': 0 };
-    states.forEach((b) => {
-      if (b.status === 'voided' || b.due <= 0) return;
+    owingItems(data, states).forEach((b) => {
       out[b.bucket] = r2((out[b.bucket] || 0) + b.due);
     });
     return out;
-  }, [states]);
+  }, [states, data]);
   const reorder = useMemo(() => data.parties.filter((p) => p.status !== 'archived')
     .map((p) => ({ party: p, sug: reorderSuggestion(p.id, data.bills) }))
     .filter((x) => x.sug && x.sug.isDue)

@@ -666,6 +666,42 @@ export function journalOwed(kind, partyId, data = {}) {
 }
 
 /**
+ * What each party's journal leaves them owing, as open items that age like
+ * bills. Money to give is set against money to take, oldest first, so the items
+ * add up to the same figure the Parties list shows. An entry has no due date,
+ * so it ages from the day it was written.
+ */
+export function journalDues(data = {}) {
+  const parties = new Set((data.journal || []).filter((e) => e.kind === 'party').map((e) => e.partyId));
+  const out = [];
+  for (const partyId of parties) {
+    const claims = journalClaims('party', partyId, data);
+    let offset = r2(claims.filter((c) => c.direction === 'give').reduce((s, c) => s + c.outstanding, 0));
+    claims
+      .filter((c) => c.direction === 'take' && c.outstanding > 0.004)
+      .sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')))
+      .forEach((c) => {
+        const used = r2(Math.min(c.outstanding, offset));
+        offset = r2(offset - used);
+        const due = r2(c.outstanding - used);
+        if (due <= 0.004) return;
+        const overdueDays = daysSince(c.date);
+        out.push({
+          id: `jr-${c.id}`, journalId: c.id, partyId, isJournal: true,
+          billNo: c.title || 'Journal entry', date: c.date, dueDate: c.date, status: 'due',
+          due, overdueDays, isOverdue: overdueDays > 0, bucket: ageBucket(Math.max(0, overdueDays)),
+        });
+      });
+  }
+  return out;
+}
+
+/** Everything parties owe the shop: open bills plus the money their journals say to take. */
+export function owingItems(data = {}, states = billStates(data.bills, data)) {
+  return [...states.filter((b) => b.status !== 'voided' && b.due > 0), ...journalDues(data)];
+}
+
+/**
  * A journal's money as statement rows, from the shop's side: a debit is more
  * owed to us, a credit less. A supplier's statement runs the other way and
  * swaps the two.
