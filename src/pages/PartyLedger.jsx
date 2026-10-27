@@ -186,6 +186,9 @@ function PartyLedger({ onRelock }) {
     return (
       <>
         {r.billId && <Button size="sm" icon={Receipt} onClick={stop(() => setPreviewId(r.billId))} title="Open bill receipt">{mobile ? 'View bill' : null}</Button>}
+        {access.isAdmin && (r.type === 'bill' || r.type === 'void') && r.billId && (
+          <Button size="sm" icon={Trash2} onClick={stop(() => setDelBill(states.find((x) => x.id === r.billId) || { id: r.billId, billNo: r.ref }))} title="Delete this bill permanently">{mobile ? 'Delete bill' : null}</Button>
+        )}
         {r.paymentId && !r.reversed && (
           <>
             {!r.isAdvance && !SYSTEM_METHODS.includes(r.method) && <Button size="sm" icon={Pencil} onClick={stop(() => setEditPay(r.paymentId))} title="Edit this payment">{mobile ? 'Edit' : null}</Button>}
