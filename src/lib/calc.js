@@ -26,6 +26,15 @@ export function billTotals(lines, rule = 'nearest1') {
  */
 export const isOpeningBill = (bill) => !!bill?.isOpening && String(bill.isOpening) !== 'false';
 
+/**
+ * How many base units one of `unit` is: 1 bag of 12 packets is 12 when the
+ * unit is the bag, and 1 for the base unit or anything else.
+ */
+export function unitFactor(item, unit) {
+  const rate = Number(item?.conversionRate);
+  return item?.altUnit && unit === item.altUnit && rate > 0 ? rate : 1;
+}
+
 export function billReturned(billId, returns = []) {
   return r2(returns.filter((r) => r.billId === billId).reduce((s, r) => s + (Number(r.valueAdjusted) || 0), 0));
 }

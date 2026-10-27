@@ -8,7 +8,7 @@ import { api } from '../lib/api.js';
 import { UNITS } from '../lib/config.js';
 import { money, r2, today, addDays, fmtDate, uid } from '../lib/format.js';
 import {
-  billTotals, billState, billStates, partyDue, advanceAvailable, itemStock, warehouseStockMap,
+  billTotals, billState, billStates, partyDue, advanceAvailable, itemStock, warehouseStockMap, unitFactor,
 } from '../lib/calc.js';
 import { printBill } from '../lib/exporters.js';
 import {
@@ -195,11 +195,14 @@ export default function BillForm() {
     setDueDate(editing.dueDate);
     setNote(editing.note || '');
     setPending(editing.delivery === 'pending');
+    // New bills are saved in the base unit, so a line stored in the alternate unit
+    // is from before conversion existed: its rate is per that unit, and it stays so.
     setLines(data.billItems.filter((l) => l.billId === editing.id).map((l) => ({
       key: uid('l'), itemId: l.itemId, qty: String(l.qty), price: String(l.price), unit: l.unit, costPriceAtSale: l.costPriceAtSale, warehouseId: l.warehouseId || '',
+      legacy: unitFactor(data.items.find((i) => i.id === l.itemId), l.unit) > 1,
     })));
     setPays([newPay()]);
-  }, [editing, data.billItems]);
+  }, [editing, data.billItems, data.items]);
 
   const party = activeParties.find((p) => p.id === partyId) || data.parties.find((p) => p.id === partyId);
 
@@ -207,12 +210,16 @@ export default function BillForm() {
     if (party && !editing) setDueDate(addDays(date, party.defaultDueDays || settings.defaultCreditDays));
   }, [party, date, settings.defaultCreditDays, editing]);
 
-  const lastPrice = useCallback((pid, itemId) => data.partyItemPrices
-    .filter((x) => x.partyId === pid && x.itemId === itemId)
-    .sort((a, b) => new Date(b.date) - new Date(a.date))[0] || null, [data.partyItemPrices]);
+  // Rates are per base unit; an older price recorded per bag is brought to that.
+  const perBase = useCallback((x) => {
+    const item = data.items.find((i) => i.id === x.itemId);
+    const f = unitFactor(item, x.unit);
+    return f > 1 ? { ...x, price: r2(Number(x.price) / f), unit: item.baseUnit } : x;
+  }, [data.items]);
   const priceHistory = useCallback((pid, itemId) => data.partyItemPrices
     .filter((x) => x.partyId === pid && x.itemId === itemId)
-    .sort((a, b) => new Date(b.date) - new Date(a.date)), [data.partyItemPrices]);
+    .sort((a, b) => new Date(b.date) - new Date(a.date)).map(perBase), [data.partyItemPrices, perBase]);
+  const lastPrice = useCallback((pid, itemId) => priceHistory(pid, itemId)[0] || null, [priceHistory]);
 
   // What this party usually orders.
   const frequent = useMemo(() => {
@@ -292,6 +299,9 @@ export default function BillForm() {
     return { itemName: item?.name, oldPrice: was, newPrice: now, pct, up: now > was, lastDate: last.date };
   };
 
+  // How many base units a line takes: 2 bags of 12 packets is 24.
+  const baseQty = (l) => (Number(l.qty) || 0) * (l.legacy ? 1 : unitFactor(data.items.find((i) => i.id === l.itemId), l.unit));
+
   // Where stock can be taken from: the shop, or any active warehouse.
   const warehouses = useMemo(() => (data.warehouses || []).filter((w) => w.status !== 'archived'), [data.warehouses]);
   const whStock = useMemo(() => warehouseStockMap(data), [data]);
@@ -306,10 +316,10 @@ export default function BillForm() {
   };
   // What a warehouse can still give this bill: its stock less what other lines here already take.
   const availableAt = (itemId, whId) => r2(stockAt(itemId, whId)
-    - lines.filter((l) => l.itemId === itemId && l.warehouseId === whId).reduce((s, l) => s + (Number(l.qty) || 0), 0));
+    - lines.filter((l) => l.itemId === itemId && l.warehouseId === whId).reduce((s, l) => s + baseQty(l), 0));
 
   const valid = useMemo(() => lines.filter((l) => l.itemId && Number(l.qty) > 0 && Number(l.price) >= 0), [lines]);
-  const totals = useMemo(() => billTotals(valid.map((l) => ({ qty: Number(l.qty), price: Number(l.price) })), settings.roundingRule), [valid, settings.roundingRule]);
+  const totals = useMemo(() => billTotals(valid.map((l) => ({ qty: baseQty(l), price: Number(l.price) })), settings.roundingRule), [valid, settings.roundingRule, data.items]);
   const paidNow = useMemo(() => r2(pays.reduce((s, p) => s + (Number(p.amount) || 0), 0)), [pays]);
   const advance = useMemo(() => (partyId ? advanceAvailable(partyId, data.partyAdvances) : 0), [partyId, data.partyAdvances]);
   const credit = useMemo(() => r2(Math.max(0, totals.total - paidNow - Number(applyAdvance || 0))), [totals.total, paidNow, applyAdvance]);
@@ -415,7 +425,7 @@ export default function BillForm() {
       const payload = {
         id: editing?.id, partyId, date,
         // Someone who cannot see cost leaves it to the server, which knows it.
-        lines: valid.map((l) => ({ itemId: l.itemId, qty: Number(l.qty), price: Number(l.price), unit: l.unit, warehouseId: l.warehouseId || '', ...(access.seesCost ? { costPriceAtSale: l.costPriceAtSale } : {}) })),
+        lines: valid.map((l) => ({ itemId: l.itemId, qty: baseQty(l), price: Number(l.price), unit: baseQty(l) === Number(l.qty) ? l.unit : data.items.find((i) => i.id === l.itemId).baseUnit, warehouseId: l.warehouseId || '', ...(access.seesCost ? { costPriceAtSale: l.costPriceAtSale } : {}) })),
         payments: pays.filter((p) => Number(p.amount) > 0).map((p) => ({ method: p.method, amount: Number(p.amount), cheque: p.cheque, note: '' })),
         advanceApplied: Number(applyAdvance) || 0,
         subtotal: totals.subtotal, roundOff: totals.roundOff, total: totals.total,
@@ -581,10 +591,10 @@ export default function BillForm() {
                         </div>
                         <div style={{ width: 112 }}>
                           <label className="small muted">Unit</label>
-                          <Select value={l.unit} onChange={(e) => updLine(l.key, { unit: e.target.value })} options={units} />
+                          <Select value={l.unit} onChange={(e) => updLine(l.key, { unit: e.target.value, legacy: false })} options={units} />
                         </div>
                         <div style={{ width: 118 }}>
-                          <label className="small muted">Rate</label>
+                          <label className="small muted">{item?.altUnit ? `Rate / ${l.legacy ? l.unit : item.baseUnit}` : 'Rate'}</label>
                           <Input type="number" min="0" step="any" value={l.price} onChange={(e) => updLine(l.key, { price: e.target.value, autoFilled: false })} />
                         </div>
                         {warehouses.length > 0 && (
@@ -599,7 +609,7 @@ export default function BillForm() {
                         <div className="spacer hide-mobile" />
                         <div className="line-amount" style={{ textAlign: 'right' }}>
                           <label className="small muted">Amount</label>
-                          <div className="money" style={{ fontSize: 16, paddingTop: 6 }}>{money((Number(l.qty) || 0) * (Number(l.price) || 0))}</div>
+                          <div className="money" style={{ fontSize: 16, paddingTop: 6 }}>{money(baseQty(l) * (Number(l.price) || 0))}</div>
                         </div>
                       </div>
                       <div className="row wrap line-meta" style={{ gap: 8, paddingLeft: 28, marginTop: 7 }}>
@@ -610,7 +620,10 @@ export default function BillForm() {
                         {l.itemId && item?.altUnit && Number(item.conversionRate) > 0 && (
                           <span className="small muted">1 {item.altUnit} = {item.conversionRate} {item.baseUnit}</span>
                         )}
-                        {stock !== null && (Number(l.qty) > stock
+                        {l.itemId && baseQty(l) !== (Number(l.qty) || 0) && (
+                          <span className="small muted">{l.qty} {l.unit} = {baseQty(l)} {item.baseUnit} × {money(Number(l.price) || 0)}</span>
+                        )}
+                        {stock !== null && (baseQty(l) > stock
                           ? <span className="pill pill-due"><TriangleAlert size={11} />Only {stock} {item?.baseUnit} in {fromName}</span>
                           : <span className="small muted">{l.warehouseId ? `In ${fromName}` : 'Stock'}: {stock} {item?.baseUnit}</span>)}
                         {alert && (

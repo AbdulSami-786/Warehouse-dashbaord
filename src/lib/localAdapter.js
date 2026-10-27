@@ -790,6 +790,34 @@ async function perform(action, p = {}) {
       return bill;
     }
 
+    // Removes the bill for good, with its lines, payments, cheques and returns.
+    case 'deleteBill': {
+      const i = db.bills.findIndex((b) => b.id === p.id);
+      if (i < 0) throw new Error('Bill not found');
+      const bill = db.bills[i];
+      const pays = db.payments.filter((x) => x.billId === bill.id);
+      if (pays.some((x) => x.method === 'Set-off')) {
+        throw new Error('Part of this bill was cleared by a set-off. Delete that set-off payment first, then delete the bill.');
+      }
+      const payIds = new Set(pays.map((x) => x.id));
+      // Money taken from the party's advance goes back to it.
+      pays.forEach((x) => { if (x.method === 'Advance' && !x.isAdvance && !x.reversed) restoreAdvance(db, x.partyId, x.amount); });
+      const cheques = db.cheques.filter((c) => c.billId === bill.id || payIds.has(c.paymentId));
+      const returns = db.returns.filter((r) => r.billId === bill.id);
+      db.cheques = db.cheques.filter((c) => !cheques.includes(c));
+      db.payments = db.payments.filter((x) => !payIds.has(x.id));
+      db.returns = db.returns.filter((r) => r.billId !== bill.id);
+      db.billItems = db.billItems.filter((l) => l.billId !== bill.id);
+      db.bills.splice(i, 1);
+      log(db, 'bill', bill.id, 'delete', `Deleted Bill ${bill.billNo}` +
+        (pays.length ? `, ${pays.length} payment${pays.length === 1 ? '' : 's'}` : '') +
+        (cheques.length ? `, ${cheques.length} cheque${cheques.length === 1 ? '' : 's'}` : '') +
+        (returns.length ? `, ${returns.length} return${returns.length === 1 ? '' : 's'}` : '') +
+        (p.reason ? ` — ${p.reason}` : ''), bill, null);
+      save();
+      return { ok: true, payments: pays.length, cheques: cheques.length, returns: returns.length };
+    }
+
     /* ----- Payments ----- */
     case 'addPayment': {
       const amount = Number(p.amount);

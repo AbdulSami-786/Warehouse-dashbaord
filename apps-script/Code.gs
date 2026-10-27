@@ -207,7 +207,7 @@ var BOOLEAN = { reversed: 1, restock: 1, active: 1, isAdvance: 1 };
  * was not updated (Deploy > Manage deployments > edit > New version > Deploy).
  * Keep in step with package.json.
  */
-var BACKEND_VERSION = '2.7.9';
+var BACKEND_VERSION = '2.7.12';
 
 function doGet(e) {
   return json({ ok: true, data: { status: 'SGA Balloon Merchant backend is running', version: BACKEND_VERSION } });
@@ -386,6 +386,7 @@ function dispatch(action, p, token) {
 
     case 'saveBill':         return saveBill(p);
     case 'voidBill':         return voidBill(p);
+    case 'deleteBill':       return deleteBill(p);
     case 'setDelivery':      return setDelivery(p);
     case 'setLineDelivery':  return setLineDelivery(p);
     case 'deliverFromWarehouse': return deliverFromWarehouse(p);
@@ -497,7 +498,7 @@ var ACTION_PAGES = {
   saveItem: ['items', 'newBill', 'purchases', 'whStock', 'whMoves'],
   archiveItem: ['items'],
   saveBill: ['newBill', 'bills'],
-  voidBill: ['bills', 'parties'], setDelivery: ['bills', 'parties'], setLineDelivery: ['bills', 'parties'],
+  voidBill: ['bills', 'parties'], deleteBill: ['bills', 'parties'], setDelivery: ['bills', 'parties'], setLineDelivery: ['bills', 'parties'],
   deliverFromWarehouse: ['bills', 'parties'],
   addPayment: ['bills', 'parties', 'outstanding'],
   reversePayment: ['bills', 'parties'], deletePayment: ['parties'], updatePayment: ['parties'],
@@ -535,7 +536,7 @@ var MONEY_ACTIONS = {
 };
 var ALWAYS_ALLOWED = { bootstrap: 1, changePassword: 1, logout: 1 };
 var SUPER_ONLY = { listUsers: 1, saveUser: 1, deleteUser: 1, importBatch: 1 };
-var ADMIN_ONLY = { fullBackup: 1, syncPush: 1 };
+var ADMIN_ONLY = { fullBackup: 1, syncPush: 1, deleteBill: 1 };
 
 function normRole(r) {
   r = String(r || '').toLowerCase().replace(/[\s_-]/g, '');
@@ -2776,6 +2777,49 @@ function voidBill(p) {
     logActivity('bill', p.id, 'void',
       'Voided Bill ' + bill.billNo + (p.reason ? ' — ' + p.reason : ''), bill, patch);
     return getById('Bills', p.id);
+  });
+}
+
+/**
+ * Permanently remove a bill with everything hanging off it: its lines, its
+ * payments, the cheques behind them and its returns. Voiding keeps the bill in
+ * the history; this does not.
+ *
+ * A bill part-cleared by a set-off is refused: the same amount was written to
+ * the supplier side, and deleting only this half would leave the two books
+ * disagreeing. Money that came out of the party's advance goes back to it.
+ */
+function deleteBill(p) {
+  return withLock(function () {
+    var bill = getById('Bills', p.id);
+    if (!bill) fail('Bill not found');
+
+    var pays = readAll('Payments').filter(function (x) { return x.billId === bill.id; });
+    if (pays.some(function (x) { return x.method === 'Set-off'; })) {
+      fail('Part of this bill was cleared by a set-off. Delete that set-off payment first, then delete the bill.');
+    }
+    var payIds = {};
+    pays.forEach(function (x) { payIds[x.id] = true; });
+
+    var cheques = readAll('Cheques').filter(function (c) { return c.billId === bill.id || payIds[c.paymentId]; });
+    var returns = readAll('Returns').filter(function (r) { return r.billId === bill.id; });
+
+    pays.forEach(function (x) {
+      if (x.method === 'Advance' && !x.isAdvance && !x.reversed) restoreAdvance(x.partyId, x.amount);
+      deleteRowById('Payments', x.id);
+    });
+    cheques.forEach(function (c) { deleteRowById('Cheques', c.id); });
+    deleteRowsWhere('Returns', 'billId', bill.id);
+    deleteRowsWhere('BillItems', 'billId', bill.id);
+    deleteRowById('Bills', bill.id);
+
+    logActivity('bill', bill.id, 'delete',
+      'Deleted Bill ' + bill.billNo +
+      (pays.length ? ', ' + pays.length + ' payment' + (pays.length === 1 ? '' : 's') : '') +
+      (cheques.length ? ', ' + cheques.length + ' cheque' + (cheques.length === 1 ? '' : 's') : '') +
+      (returns.length ? ', ' + returns.length + ' return' + (returns.length === 1 ? '' : 's') : '') +
+      (p.reason ? ' — ' + p.reason : ''), bill, null);
+    return { ok: true, payments: pays.length, cheques: cheques.length, returns: returns.length };
   });
 }
 

@@ -9,7 +9,7 @@ export const CONFIG = {
   defaultShopName: 'SGA Balloon Merchant',
 
   backend: 'sheets',
-  appsScriptUrl: 'https://script.google.com/macros/s/AKfycbxa7_mo7gRekN6lfqfxNPmlEevj2cZjU-2PI0aQMLfMiMu-AT16NXwHe1UXt4iUltps/exec',
+  appsScriptUrl: 'https://script.google.com/macros/s/AKfycbx2yH__-pgX7di_V_AzkBBWL6R7NFmhxiWvdSrwuq-6l1QMvsanG3DsF_BZaSpnVmnJ/exec',
 
   // Where shared party-ledger links point, so a link made on localhost, online
   // or in the desktop software always opens the live site. Blank means this

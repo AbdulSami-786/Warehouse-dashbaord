@@ -25,6 +25,7 @@ export const api = {
 
   saveBill: (p) => call('saveBill', p),
   voidBill: (id, reason) => call('voidBill', { id, reason }),
+  deleteBill: (id, reason) => call('deleteBill', { id, reason }),
   setDelivery: (id, delivery) => call('setDelivery', { id, delivery }),
   setLineDelivery: (billId, lines) => call('setLineDelivery', { billId, lines }),
   deliverFromWarehouse: (billId, warehouseId, lines) => call('deliverFromWarehouse', { billId, warehouseId, lines }),

@@ -55,6 +55,7 @@ function PartyLedger({ onRelock }) {
   const [shareOpen, setShareOpen] = useState(false);
   const [sheetBill, setSheetBill] = useState(null);
   const [voidBill, setVoidBill] = useState(null);
+  const [delBill, setDelBill] = useState(null);
   const [expanded, setExpanded] = useState({});
   const [view, setView] = useState('statement');
   const [filter, setFilter] = useState('all');
@@ -164,6 +165,11 @@ function PartyLedger({ onRelock }) {
     } catch { /* toasted */ } finally {
       setLinking(false);
     }
+  };
+  const doDeleteBill = async () => {
+    const b = delBill;
+    setDelBill(null);
+    await mutate(() => api.deleteBill(b.id, 'Deleted from party ledger'), `Bill ${b.billNo} deleted`);
   };
   const doVoid = async () => {
     const b = voidBill;
@@ -442,6 +448,7 @@ function PartyLedger({ onRelock }) {
                                     <button className="btn btn-ghost btn-sm" title="Void bill" onClick={() => setVoidBill(b)}><Ban size={14} color="var(--danger)" /></button>
                                   </>
                                 )}
+                                {access.isAdmin && <button className="btn btn-ghost btn-sm" title="Delete bill permanently" onClick={() => setDelBill(b)}><Trash2 size={14} color="var(--danger)" /></button>}
                               </div>
                             </td>
                           </tr>
@@ -683,7 +690,17 @@ function PartyLedger({ onRelock }) {
             { label: 'Edit bill', icon: Pencil, onClick: () => navigate(`/bill/${sheetBill.id}/edit`) },
             { label: 'Void bill', icon: Ban, danger: true, onClick: () => setVoidBill(sheetBill) },
           ] : []),
+          ...(access.isAdmin ? [{ label: 'Delete bill', icon: Trash2, danger: true, onClick: () => setDelBill(sheetBill) }] : []),
         ] : []}
+      />
+      <Confirm
+        open={!!delBill}
+        title="Delete this bill for good?"
+        message={`Bill ${delBill?.billNo} will be removed permanently, together with its items, payments, cheques and returns. This cannot be undone. To keep it in your history, use Void instead.`}
+        confirmLabel="Delete bill"
+        danger
+        onConfirm={doDeleteBill}
+        onCancel={() => setDelBill(null)}
       />
       <Confirm
         open={!!voidBill}
