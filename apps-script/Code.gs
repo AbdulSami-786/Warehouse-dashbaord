@@ -207,7 +207,7 @@ var BOOLEAN = { reversed: 1, restock: 1, active: 1, isAdvance: 1 };
  * was not updated (Deploy > Manage deployments > edit > New version > Deploy).
  * Keep in step with package.json.
  */
-var BACKEND_VERSION = '2.7.12';
+var BACKEND_VERSION = '2.7.14';
 
 function doGet(e) {
   return json({ ok: true, data: { status: 'SGA Balloon Merchant backend is running', version: BACKEND_VERSION } });
@@ -1017,8 +1017,26 @@ function withLock(fn) {
   }
 }
 
+/**
+ * The bootstrap cache is keyed by a version that every write replaces.
+ *
+ * Removing one fixed key was not enough: a read that began before a write could
+ * finish after the write's clearCache() and then store its old copy, which the
+ * next 60 seconds of reads were handed — an entry just saved went missing from
+ * the dashboard and came back later. A read now stores under the version it
+ * started with, so a write that happens meanwhile leaves that copy unreachable.
+ */
+function cacheVersion(cache) {
+  var v = cache.get('bver');
+  if (!v) {
+    v = uid('ver');
+    cache.put('bver', v, 21600);
+  }
+  return v;
+}
+
 function clearCache() {
-  try { CacheService.getScriptCache().remove('bootstrap'); } catch (e) {}
+  try { CacheService.getScriptCache().put('bver', uid('ver'), 21600); } catch (e) {}
 }
 
 /* ==========================================================================
@@ -1682,11 +1700,15 @@ function bootstrap() {
   }
 
   var cache = null;
-  try { cache = CacheService.getScriptCache(); } catch (e) {}
+  var cacheKey = null;
+  try {
+    cache = CacheService.getScriptCache();
+    cacheKey = 'bootstrap:' + cacheVersion(cache);
+  } catch (e) { cache = null; }
 
   if (cache) {
     try {
-      var hit = cache.get('bootstrap');
+      var hit = cache.get(cacheKey);
       if (hit) return JSON.parse(hit);
     } catch (e) {
       // A cache miss, expiry, or parse failure must never fail the request —
@@ -1721,7 +1743,7 @@ function bootstrap() {
       // CacheService caps an entry at 100KB of UTF-8, so measure bytes, not
       // JS characters, and leave headroom.
       if (Utilities.newBlob(payload).getBytes().length < 90000) {
-        cache.put('bootstrap', payload, CACHE_SECONDS);
+        cache.put(cacheKey, payload, CACHE_SECONDS);
       }
     } catch (e) {
       // Caching is an optimisation; never let it break the response.

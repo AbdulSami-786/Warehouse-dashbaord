@@ -61,10 +61,19 @@ export function AppProvider({ children }) {
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3200);
   }, []);
 
+  // Reloads can overlap (a save's reload, a background one, another tab's) and
+  // a slow answer can arrive after a newer one. Applying it would put the screen
+  // back to how it was before the latest entry, which then seems to vanish.
+  const loadSeq = useRef(0);
+  const appliedSeq = useRef(0);
+
   const refresh = useCallback(async ({ silent = false } = {}) => {
     if (!silent) setLoading(true);
+    const seq = ++loadSeq.current;
     try {
       const res = await api.bootstrap();
+      if (seq < appliedSeq.current) return res;
+      appliedSeq.current = seq;
       const settings = { ...EMPTY.settings };
       Object.entries(res.settings || {}).forEach(([k, v]) => {
         if (v !== null && v !== undefined && v !== '') settings[k] = v;

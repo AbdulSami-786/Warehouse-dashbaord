@@ -211,6 +211,35 @@ function rebase(fresh, before, after) {
   return out;
 }
 
+/**
+ * `work` as the Sheet holds it after an upload in which the server refused some
+ * rows (`errors`, from syncPush). A refused row must stay a difference from the
+ * new base: otherwise it counts as uploaded, and the next download — which
+ * rebuilds the copy from the Sheet plus differences — silently drops it. A new
+ * row is left out, a changed row keeps its old values, a removed row is put back.
+ */
+function baseAfterUpload(base, work, errors) {
+  const failed = (errors || []).filter((e) => e && e.id && e.id !== '(no id)');
+  if (!failed.length) return work;
+  const out = clone(work);
+  const keyOf = Object.fromEntries(Object.entries(TABS).map(([key, tab]) => [tab, key]));
+  for (const { tab, id } of failed) {
+    const key = keyOf[tab];
+    if (!key || key === 'activityLog') continue;
+    const was = (base[key] || []).find((r) => String(r?.id) === String(id));
+    const rows = out[key] || [];
+    const at = rows.findIndex((r) => String(r?.id) === String(id));
+    if (was) {
+      if (at >= 0) rows[at] = clone(was);
+      else rows.push(clone(was));
+    } else if (at >= 0) {
+      rows.splice(at, 1);
+    }
+    out[key] = rows;
+  }
+  return out;
+}
+
 /* ------------------------------------------------------------ One at a time */
 
 // Saves and the disk steps of a sync take turns, so a sync never reads the
@@ -278,7 +307,7 @@ async function cycle() {
       if (count) res = await sheetsCall('syncPush', { records, deleted });
       await turn(() => {
         // The Sheet holds that copy now: it is the new starting point.
-        disk.set(userKey(u, 'base'), JSON.stringify(snap.work));
+        disk.set(userKey(u, 'base'), JSON.stringify(baseAfterUpload(snap.base, snap.work, res?.errors)));
         const meta = readMeta(u);
         meta.pending = meta.pending.slice(snap.n);
         const problems = (res?.errors || []).map((e) => ({ at: stamp(), tab: e.tab, id: e.id, error: e.error }));
