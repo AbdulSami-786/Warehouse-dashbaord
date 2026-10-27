@@ -100,6 +100,9 @@ function PartyLedger({ onRelock }) {
   // What the journal leaves open: above zero they owe us, below zero we owe them.
   const journalBal = journalOwed('party', id, data);
   const net = r2(totals.due + journalBal - owedToThem);
+  // Bills still unpaid plus the journal's money to take, as on the Parties list.
+  const journalDue = Math.max(0, journalBal);
+  const outstanding = r2(totals.due + journalDue);
   const reorder = useMemo(() => reorderSuggestion(id, data.bills), [id, data.bills]);
   const ledger = useMemo(() => combinedPartyLedger(id, data), [id, data]);
   const shown = useMemo(() => ledger.filter((r) => ledgerFilterMatch(r, filter)), [ledger, filter]);
@@ -125,7 +128,7 @@ function PartyLedger({ onRelock }) {
   const exportExcel = () => {
     exportCSV(`Ledger_${party.name}`, ['Bill No', 'Date', 'Status', 'Total', 'Paid', 'Due', 'Due Date'],
       bills.map((b) => [b.billNo, fmtDate(b.date), b.status, b.net.toFixed(2), b.paid.toFixed(2), b.due.toFixed(2), b.due > 0 ? fmtDate(b.dueDate) : '']),
-      [`${settings.shopName} — Party Ledger`, party.name, party.phone || '', `Outstanding: ${money(totals.due)}`, ...netMeta]);
+      [`${settings.shopName} — Party Ledger`, party.name, party.phone || '', `Outstanding: ${money(outstanding)}`, ...(journalDue > 0.004 ? [`Includes journal: ${money(journalDue)}`] : []), ...netMeta]);
     toast('Ledger exported');
   };
   // The bills table: every bill with what was paid and what is due.
@@ -167,7 +170,7 @@ function PartyLedger({ onRelock }) {
     setVoidBill(null);
     await mutate(() => api.voidBill(b.id, 'Voided from party ledger'), `Bill ${b.billNo} voided`);
   };
-  const waText = `${settings.shopName}\n${party.name} — Ledger Summary\n\nTotal billed: ${money(totals.billed)}\nPaid: ${money(totals.paid)}\n*Outstanding: ${money(totals.due)}*`
+  const waText = `${settings.shopName}\n${party.name} — Ledger Summary\n\nTotal billed: ${money(totals.billed)}\nPaid: ${money(totals.paid)}\n*Outstanding: ${money(outstanding)}*`
     + (totals.advance > 0 ? `\nAdvance with us: ${money(totals.advance)}` : '')
     + (supplier && Math.abs(owedToThem) > 0.004
       ? `\nWe owe you for purchases: ${money(owedToThem)}\n*Net balance: ${money(Math.abs(net))} ${net >= 0 ? 'you owe us' : 'we owe you'}*` : '');
@@ -219,10 +222,10 @@ function PartyLedger({ onRelock }) {
         <Stat label="Total Paid" value={money(totals.paid)} icon={CircleCheck} tone="#16A34A" />
         <Stat
           label="Outstanding"
-          value={money(totals.due)}
+          value={money(outstanding)}
           icon={Receipt}
           tone="#DC2626"
-          note={[totals.pendingCheques > 0 ? `${money(totals.pendingCheques)} in uncleared cheques` : '', totals.credit > 0 ? `${money(totals.credit)} overpaid — party is in credit` : ''].filter(Boolean).join(' · ') || null}
+          note={[journalDue > 0.004 ? `Includes ${money(journalDue)} from the journal` : '', totals.pendingCheques > 0 ? `${money(totals.pendingCheques)} in uncleared cheques` : '', totals.credit > 0 ? `${money(totals.credit)} overpaid — party is in credit` : ''].filter(Boolean).join(' · ') || null}
           noteTone="#EA580C"
         />
         <Stat label="Advance Balance" value={money(totals.advance)} icon={Wallet} tone="#16A34A" />
@@ -260,8 +263,8 @@ function PartyLedger({ onRelock }) {
           </>
         )}
         {Number(party.creditLimit) > 0 && (
-          <span className={`pill ${totals.due > party.creditLimit ? 'pill-due' : 'pill-neutral'}`}>
-            Credit limit {money(party.creditLimit)}{totals.due > party.creditLimit ? ' — exceeded' : ''}
+          <span className={`pill ${outstanding > party.creditLimit ? 'pill-due' : 'pill-neutral'}`}>
+            Credit limit {money(party.creditLimit)}{outstanding > party.creditLimit ? ' — exceeded' : ''}
           </span>
         )}
         {reorder?.isDue && <span className="pill pill-partial">Usually orders every {reorder.avgDays} days — it has been {reorder.sinceDays}</span>}
