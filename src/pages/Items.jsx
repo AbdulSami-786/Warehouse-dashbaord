@@ -12,11 +12,13 @@ import {
 } from '../components/ui.jsx';
 import { ItemForm } from '../components/forms.jsx';
 import ImportButton from '../components/ImportButton.jsx';
+import { UnitSwitch, useUnitPick } from '../components/UnitSwitch.jsx';
 
 export default function Items() {
   const { data, settings, mutate, toast, access } = useApp();
   const sc = access.seesCost;
   const [q, setQ] = useState('');
+  const { pickUnit, unitOf, showQty } = useUnitPick();
   const [category, setCategory] = useState('all');
   const [archived, setArchived] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -92,15 +94,15 @@ export default function Items() {
                       </td>
                       <td>{i.category || <span className="muted">—</span>}</td>
                       <td className="small">
-                        {i.baseUnit}
+                        <UnitSwitch item={i} unit={unitOf(i)} onPick={pickUnit} />
                         {i.altUnit && Number(i.conversionRate) > 0 && <div className="muted">1 {i.altUnit} = {i.conversionRate} {i.baseUnit}</div>}
                       </td>
                       {sc && <td className="r"><Money value={i.costPrice} /></td>}
                       <td className="r strong">
-                        <span className="num" style={{ color: i.low ? 'var(--danger)' : undefined }}>{i.stock} {i.baseUnit}</span>
+                        <span className="num" style={{ color: i.low ? 'var(--danger)' : undefined }}>{showQty(i, i.stock)} {unitOf(i)}</span>
                         {i.low && <div><Pill status="due" label="Low stock" /></div>}
                       </td>
-                      {hasWarehouses && <td className="r">{i.inWh ? <span className="num">{i.inWh} {i.baseUnit}</span> : <span className="muted">—</span>}</td>}
+                      {hasWarehouses && <td className="r">{i.inWh ? <span className="num">{showQty(i, i.inWh)} {unitOf(i)}</span> : <span className="muted">—</span>}</td>}
                       <td className="r muted">{Number(i.lowStockAlert) > 0 ? i.lowStockAlert : '—'}</td>
                       {sc && <td className="r strong"><Money value={i.value} /></td>}
                       <td>
@@ -129,8 +131,9 @@ export default function Items() {
                   <div className="top"><span className="name">{i.name}</span>{sc && <span className="amt">{money(i.costPrice)}</span>}</div>
                   <div className="meta">
                     {i.low && <Pill status="due" label="Low stock" />}
-                    <span style={{ color: i.low ? 'var(--danger)' : undefined, fontWeight: 600 }}>{i.stock} {i.baseUnit}</span>
-                    {hasWarehouses && i.inWh > 0 && <span>+{i.inWh} in warehouses</span>}
+                    <span style={{ color: i.low ? 'var(--danger)' : undefined, fontWeight: 600 }}>{showQty(i, i.stock)} {unitOf(i)}</span>
+                    <UnitSwitch item={i} unit={unitOf(i)} onPick={pickUnit} />
+                    {hasWarehouses && i.inWh > 0 && <span>+{showQty(i, i.inWh)} in warehouses</span>}
                     {i.category && <span>{i.category}</span>}
                   </div>
                 </div>

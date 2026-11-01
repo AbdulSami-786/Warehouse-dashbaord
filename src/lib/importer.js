@@ -2,7 +2,7 @@
 // turning its rows into the same saves the forms make. Nothing here touches the
 // screen, so the whole path can be tested on its own.
 
-import { r2, today, nameKey, phoneKey } from './format.js';
+import { r2, qty, today, nameKey, phoneKey } from './format.js';
 import { billTotals } from './calc.js';
 import { UNITS, EXPENSE_CATEGORIES, WAREHOUSE_EXPENSE_CATEGORIES } from './config.js';
 
@@ -629,15 +629,50 @@ export const SPECS = {
     example: ['In', '2026-03-03', 'Godown 2', '', 'GRN-778', 'City Balloon Wholesale', 'LES-1234', 'Rafiq', 'Balloon Pack 100', '40', 'Packet', 'Carton', '50', '', ''],
     needs: ['items'],
     plan(recs, data, ctx) {
-      const done = new Set((data.whMoves || []).filter((m) => m.reference && m.status !== 'voided').map((m) => `${m.type}|${m.warehouseId}|${m.date}|${key(m.reference)}`));
-      // Documents without a reference are recognised by what they hold, so importing the same file twice never doubles stock.
-      const sigOf = (type, whId, toId, date, party, lines) => `${type}|${whId}|${toId || ''}|${date}|${nameKey(party)}|${lines.map((l) => `${l.itemId}:${r2(l.qty)}`).sort().join(',')}`;
+      // Row by row, so a file that is the old one plus a few new rows brings in only the new ones:
+      // a row is "already there" when an active movement of the same kind, warehouse and item
+      // holds that quantity (and the same reference / date, when the file gives them).
       const linesOf = new Map();
       (data.whMoveLines || []).forEach((l) => { if (!linesOf.has(l.moveId)) linesOf.set(l.moveId, []); linesOf.get(l.moveId).push(l); });
-      const have = new Set((data.whMoves || []).filter((m) => !m.reference && m.status !== 'voided')
-        .map((m) => sigOf(m.type, m.warehouseId, m.toWarehouseId, m.date, m.partyName, linesOf.get(m.id) || [])));
-      const groups = new Map();
+      const pool = new Map();
+      (data.whMoves || []).filter((m) => m.status !== 'voided').forEach((m) => {
+        (linesOf.get(m.id) || []).forEach((l) => {
+          const k = `${m.type}|${m.warehouseId}|${m.type === 'transfer' ? m.toWarehouseId : ''}|${l.itemId}`;
+          if (!pool.has(k)) pool.set(k, []);
+          pool.get(k).push({ m, l, used: false });
+        });
+      });
+      const known = [];
+      const fresh = [];
       recs.forEach((r) => {
+        const t = moveType(r.type || 'in');
+        const w = ctx.warehouse(r.warehouse);
+        const it = ctx.item(r.item);
+        const q = toNumber(r.qty);
+        const d = t === 'transfer' ? ctx.warehouse(r.toWarehouse) : null;
+        // Anything the group step must report (bad type, unknown warehouse or item…) goes straight on.
+        if (!t || !w || !it || !(q > 0) || (t === 'transfer' && !d)) { fresh.push(r); return; }
+        const base = ctx.baseQty(it, q, r.unit);
+        const fits = (pool.get(`${t}|${w.id}|${d ? d.id : ''}|${it.id}`) || []).filter((c) => !c.used
+          && (!r.reference || key(c.m.reference) === key(r.reference))
+          && (!r.date || String(c.m.date).slice(0, 10) === r.date));
+        const same = fits.find((c) => Math.abs(Number(c.l.qty) - base) < 0.005);
+        if (same) {
+          same.used = true;
+          known.push({ rows: [r.$row], ref: r.item, skip: `${qty(base)} ${it.baseUnit} is already in ${same.m.docNo}` });
+          return;
+        }
+        // The same document and item with another quantity is a correction, not a new row: never add it on top.
+        const other = r.reference ? fits[0] : null;
+        if (other) {
+          other.used = true;
+          known.push({ rows: [r.$row], ref: r.item, error: `${r.item}: ${other.m.docNo} already holds ${qty(Number(other.l.qty))} ${it.baseUnit}, the file says ${qty(base)}. Cancel or fix that document first, or give this row a new reference.` });
+          return;
+        }
+        fresh.push(r);
+      });
+      const groups = new Map();
+      fresh.forEach((r) => {
         const k = `${key(r.type)}|${nameKey(r.warehouse)}|${nameKey(r.toWarehouse)}|${r.date || today()}|${r.reference ? key(r.reference) : key(r.party)}`;
         if (!groups.has(k)) groups.set(k, []);
         groups.get(k).push(r);
@@ -653,7 +688,6 @@ export const SPECS = {
         const dest = type === 'transfer' ? ctx.warehouse(head.toWarehouse) : null;
         if (type === 'transfer' && !dest) return { rows: rowNos, ref, error: `Destination warehouse "${head.toWarehouse || ''}" not found` };
         const date = head.date || today();
-        if (head.reference && done.has(`${type}|${wh.id}|${date}|${key(head.reference)}`)) return { rows: rowNos, ref, skip: `${head.reference} is already recorded for ${wh.name}` };
         const lines = [];
         const missing = [];
         const itemInfo = {};
@@ -671,11 +705,6 @@ export const SPECS = {
         }
         if (missing.length) return { rows: rowNos, ref, error: `Item${missing.length === 1 ? '' : 's'} not found: ${[...new Set(missing)].join(', ')}`, need: { items: missing }, itemInfo };
         // Stock in / out name who the goods came from or went to: that warehouse party's khata.
-        if (!head.reference) {
-          const sig = sigOf(type, wh.id, dest ? dest.id : '', date, head.party || '', lines);
-          if (have.has(sig)) return { rows: rowNos, ref, skip: `The same ${type} for ${wh.name} on ${date} is already recorded` };
-          have.add(sig);
-        }
         const withParty = (type === 'in' || type === 'out') && head.party;
         const wp = withParty ? ctx.whParty(head.party) : null;
         return {
@@ -691,7 +720,8 @@ export const SPECS = {
         };
       });
       // Goods must arrive before they can leave: each day's incoming documents first.
-      return planned.sort((a, b) => (a.op && b.op ? String(a.date).localeCompare(String(b.date)) || b.sign - a.sign : 0));
+      planned.sort((a, b) => (a.op && b.op ? String(a.date).localeCompare(String(b.date)) || b.sign - a.sign : 0));
+      return [...known, ...planned];
     },
   },
 };
@@ -766,14 +796,22 @@ export function preview(spec, records, data, opts) {
     if (empty) out.errors.push({ rows: [r.$row], ref: '', message: `${empty.label} is empty` });
     return !empty;
   });
+  let pending = 0;
   spec.plan(usable, data, ctx).forEach((p) => {
     const rows = p.rows || [p.row];
     if (p.op) out.ops.push({ ...p.op, ref: p.ref || `Row ${rows[0]}`, rows });
     else if (p.skip) out.skipped.push({ rows, ref: p.ref || '', message: p.skip });
-    else if (p.error) out.errors.push({ rows, ref: p.ref || '', message: p.error });
+    else if (p.error) {
+      out.errors.push({ rows, ref: p.ref || '', message: p.error });
+      // Rows held back only until their missing names are added are still new rows.
+      if (p.need) pending += rows.length;
+    }
     if (p.itemInfo) Object.assign(out.itemInfo, p.itemInfo);
     if (p.need) Object.entries(p.need).forEach(([k, names]) => names.forEach((n) => n && out.need[k]?.add(String(n).trim())));
   });
+  // In rows, not documents: what the file brings that is new, and what it repeats.
+  out.newRows = out.ops.reduce((n, o) => n + (o.rows || []).length, 0) + pending;
+  out.oldRows = out.skipped.reduce((n, o) => n + (o.rows || []).length, 0);
   return out;
 }
 

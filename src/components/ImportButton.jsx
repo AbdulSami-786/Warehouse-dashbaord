@@ -231,6 +231,14 @@ export default function ImportButton({ kind, label = 'Import', defaultType = '' 
                       <div className="skip"><b>{plan.skipped.length}</b> already in the system — skipped</div>
                       <div className="bad"><b>{plan.errors.length}</b> with a problem</div>
                     </div>
+                    {plan.oldRows > 0 && (
+                      <div className="small" style={{ marginTop: 10, padding: '9px 12px', borderRadius: 'var(--r)', background: 'var(--neutral-bg)', border: '1px solid var(--border)' }}>
+                        <b>{plan.oldRows} row{plan.oldRows === 1 ? '' : 's'} of this file {plan.oldRows === 1 ? 'is' : 'are'} already in the system</b> and will not be added again.
+                        {' '}{plan.newRows > 0
+                          ? <>Only the <b>{plan.newRows} new row{plan.newRows === 1 ? '' : 's'}</b> will be imported.</>
+                          : <>There is nothing new in this file.</>}
+                      </div>
+                    )}
                     {needCount > 0 && (
                       <label className="imp-create">
                         <input type="checkbox" checked={createMissing} onChange={(e) => setCreateMissing(e.target.checked)} />
