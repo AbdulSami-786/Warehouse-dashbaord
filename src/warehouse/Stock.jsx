@@ -8,7 +8,7 @@ import {
   money, r2, fmtDate, norm, qty, rangeFor,
 } from '../lib/format.js';
 import {
-  itemStock, MOVE_TYPES, warehouseItemCard, warehouseStockMap,
+  itemStock, MOVE_TYPES, unitFactor, warehouseItemCard, warehouseStockMap,
 } from '../lib/calc.js';
 import { exportCSV, printReport } from '../lib/exporters.js';
 import {
@@ -17,12 +17,42 @@ import {
 import { useSelectedWarehouse, WarehousePicker } from './WarehouseLayout.jsx';
 import ImportButton from '../components/ImportButton.jsx';
 
+/** Base unit plus the alternate one (bag, carton…) when the item has a usable conversion. */
+const unitsOf = (item) => (item.altUnit && Number(item.conversionRate) > 0 ? [item.baseUnit, item.altUnit] : [item.baseUnit]);
+
+/** Unit chips under an item name; clicking one shows that row's stock in it. */
+function UnitSwitch({ item, unit, onPick }) {
+  const units = unitsOf(item);
+  if (units.length < 2) return <span>{item.baseUnit}</span>;
+  return (
+    <span className="chips" style={{ display: 'inline-flex', gap: 4 }}>
+      {units.map((u) => (
+        <button
+          key={u}
+          type="button"
+          className={`chip ${u === unit ? 'chip-active' : ''}`}
+          title={u === item.baseUnit ? `Show in ${u}` : `Show in ${u} (1 ${u} = ${item.conversionRate} ${item.baseUnit})`}
+          style={{ padding: '0 8px', fontSize: 12 }}
+          onClick={(e) => { e.stopPropagation(); onPick(item.id, u); }}
+        >
+          {u}
+        </button>
+      ))}
+    </span>
+  );
+}
+
 export default function Stock() {
   const { data, settings, activeWarehouses, toast, access } = useApp();
   const sc = access.seesCost;
   const navigate = useNavigate();
   const selected = useSelectedWarehouse();
   const [q, setQ] = useState('');
+  // Display unit chosen per item (defaults to the base unit); stock itself is always kept in base units.
+  const [unitPick, setUnitPick] = useState({});
+  const pickUnit = (id, u) => setUnitPick((p) => ({ ...p, [id]: u }));
+  const unitOf = (item) => (unitsOf(item).includes(unitPick[item.id]) ? unitPick[item.id] : item.baseUnit);
+  const showQty = (item, v) => qty(v / unitFactor(item, unitOf(item)));
   const [category, setCategory] = useState('all');
   const [show, setShow] = useState('in-stock');
   const categories = useMemo(() => [...new Set(data.items.map((i) => i.category).filter(Boolean))].sort(), [data.items]);
@@ -108,13 +138,13 @@ export default function Stock() {
                     <tr key={r.item.id} className="clickable" onClick={() => navigate(`/warehouse/item/${r.item.id}${selected ? `?wh=${selected}` : ''}`)}>
                       <td>
                         <div style={{ fontWeight: 600 }}>{r.item.name}{r.low && <> <Pill status="due" label="Low" /></>}</div>
-                        <div className="small muted">{[r.item.category, r.item.baseUnit].filter(Boolean).join(' · ')}</div>
+                        <div className="small muted">{[r.item.category].filter(Boolean).join(' · ')}{r.item.category ? ' · ' : ''}<UnitSwitch item={r.item} unit={unitOf(r.item)} onPick={pickUnit} /></div>
                       </td>
                       {r.per.map((v, i) => (
-                        <td key={cols[i].id} className="r num" style={{ color: v < 0 ? 'var(--danger)' : v === 0 ? 'var(--text-muted)' : undefined }}>{v ? qty(v) : '—'}</td>
+                        <td key={cols[i].id} className="r num" style={{ color: v < 0 ? 'var(--danger)' : v === 0 ? 'var(--text-muted)' : undefined }}>{v ? showQty(r.item, v) : '—'}</td>
                       ))}
-                      {cols.length > 1 && <td className="r strong num">{qty(r.total)}</td>}
-                      <td className="r muted num">{qty(r.shop)}</td>
+                      {cols.length > 1 && <td className="r strong num">{showQty(r.item, r.total)}</td>}
+                      <td className="r muted num">{showQty(r.item, r.shop)}</td>
                       <td className="r cost-only"><Money value={r.value} /></td>
                     </tr>
                   ))}
@@ -133,10 +163,11 @@ export default function Stock() {
             <div className="mcards" style={{ padding: 12 }}>
               {rows.map((r) => (
                 <div key={r.item.id} className="mcard" onClick={() => navigate(`/warehouse/item/${r.item.id}${selected ? `?wh=${selected}` : ''}`)}>
-                  <div className="top"><span className="name">{r.item.name}</span><span className="amt num">{qty(r.total)} {r.item.baseUnit}</span></div>
+                  <div className="top"><span className="name">{r.item.name}</span><span className="amt num">{showQty(r.item, r.total)} {unitOf(r.item)}</span></div>
                   <div className="meta">
                     {r.low && <Pill status="due" label="Low" />}
-                    {cols.length > 1 && r.per.map((v, i) => (v ? <span key={cols[i].id}>{cols[i].code || cols[i].name}: {qty(v)}</span> : null))}
+                    <UnitSwitch item={r.item} unit={unitOf(r.item)} onPick={pickUnit} />
+                    {cols.length > 1 && r.per.map((v, i) => (v ? <span key={cols[i].id}>{cols[i].code || cols[i].name}: {showQty(r.item, v)}</span> : null))}
                     <span className="cost-only">{money(r.value)}</span>
                   </div>
                 </div>

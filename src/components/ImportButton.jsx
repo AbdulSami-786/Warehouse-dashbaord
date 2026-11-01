@@ -120,7 +120,7 @@ export default function ImportButton({ kind, label = 'Import', defaultType = '' 
       let current = plan;
       let created = [];
       if (createMissing && needCount) {
-        created = await send(creationOps(plan.need, data), 25, 'Adding missing names');
+        created = await send(creationOps(plan.need, data, plan.itemInfo), 25, 'Adding missing names');
         const fresh = await refresh({ silent: true });
         current = preview(spec, records, fresh, opts);
       }

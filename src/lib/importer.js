@@ -182,7 +182,8 @@ const catOf = (v, list) => list.find((c) => key(c) === key(v)) || text(v);
 
 /* ------------------------------------------------------------------- specs */
 
-const F = (k, label, aliases = [], opts = {}) => ({ key: k, label, aliases: [label, k, ...aliases], ...opts });
+// `prefer` names headings that win over the field's own label ("Total qty" over "Qty").
+const F = (k, label, aliases = [], opts = {}) => ({ key: k, label, aliases: [...(opts.prefer || []), label, k, ...aliases], ...opts });
 
 export const MOVE_ALIASES = [
   ['in', ['in', 'stockin', 'grn', 'receive', 'received', 'inward', 'purchase']],
@@ -235,22 +236,44 @@ export const SPECS = {
 
   items: {
     label: 'items', title: 'Items',
+    help: 'Items already in the system are skipped, except one with no alternate unit yet: the alternate unit and pieces-per-unit in the file (its bag, carton…) are added to it, and its stock is not touched.',
     fields: [
       F('name', 'Item name', ['item', 'product', 'productname', 'name', 'description'], { required: true }),
       F('category', 'Category', ['group', 'type']),
       F('baseUnit', 'Unit', ['baseunit', 'uom']),
-      F('altUnit', 'Alternate unit', ['altunit', 'packing']),
-      F('conversionRate', 'Pieces per alternate unit', ['conversion', 'conversionrate', 'perpack', 'packsize']),
+      F('altUnit', 'Alternate unit', ['altunit', 'alternateunit', 'packing']),
+      F('conversionRate', 'Pieces per alternate unit', ['conversion', 'conversionrate', 'perpack', 'packsize', 'qtybag', 'qtyperbag', 'qtyperalternateunit', 'qtyperaltunit']),
       F('costPrice', 'Cost price', ['cost', 'purchaseprice', 'buyprice', 'rate'], { cost: true }),
-      F('openingStock', 'Opening stock', ['stock', 'qty', 'quantity', 'opening', 'balance']),
+      F('openingStock', 'Opening stock', ['stock', 'qty', 'quantity', 'opening', 'balance'], { prefer: ['tqty', 'totalqty'] }),
       F('lowStockAlert', 'Low stock alert', ['minstock', 'reorderlevel', 'minimum', 'alert']),
     ],
     example: ['Balloon Pack 100', 'Balloons', 'Packet', 'Carton', '50', '180', '200', '20'],
     plan(recs, data) {
       const names = new Set(data.items.map((i) => nameKey(i.name)));
+      const existing = new Map();
+      data.items.forEach((i) => { if (i.status !== 'archived' || !existing.has(nameKey(i.name))) existing.set(nameKey(i.name), i); });
       return recs.map((r) => {
         if (!r.name) return { row: r.$row, error: 'Item name is empty' };
-        if (names.has(nameKey(r.name))) return { row: r.$row, skip: `"${r.name}" already exists` };
+        if (names.has(nameKey(r.name))) {
+          // An item that has no packing yet (bag, carton…) gets the file's; one that has it is left alone.
+          const it = existing.get(nameKey(r.name));
+          const rate = toNumber(r.conversionRate);
+          const hasPacking = !!it?.altUnit && Number(it.conversionRate) > 0;
+          if (!it || it.status === 'archived' || hasPacking || !r.altUnit || !(rate > 0)) return { row: r.$row, skip: `"${r.name}" already exists` };
+          const fileUnit = unitOf(r.baseUnit);
+          const sameUnit = !fileUnit || key(it.baseUnit) === key(fileUnit);
+          if (!sameUnit && key(it.baseUnit) !== 'piece') return { row: r.$row, skip: `"${r.name}" already exists in ${it.baseUnit}, not ${fileUnit}, so its packing was left alone` };
+          return {
+            row: r.$row, ref: `${r.name} — add ${unitOf(r.altUnit)} packing`,
+            op: {
+              action: 'saveItem',
+              payload: {
+                id: it.id, name: it.name, baseUnit: fileUnit || it.baseUnit, altUnit: unitOf(r.altUnit), conversionRate: rate,
+                category: it.category || r.category || '', costPrice: Number(it.costPrice) || 0, lowStockAlert: Number(it.lowStockAlert) || 0,
+              },
+            },
+          };
+        }
         names.add(nameKey(r.name));
         return {
           row: r.$row, ref: r.name,
@@ -258,7 +281,7 @@ export const SPECS = {
             action: 'saveItem',
             payload: {
               name: r.name, category: r.category, baseUnit: unitOf(r.baseUnit) || 'Piece', altUnit: r.altUnit ? unitOf(r.altUnit) : '',
-              conversionRate: toNumber(r.conversionRate) || 0, costPrice: toNumber(r.costPrice) || 0,
+              conversionRate: r.altUnit ? toNumber(r.conversionRate) || 0 : 0, costPrice: toNumber(r.costPrice) || 0,
               openingStock: toNumber(r.openingStock) || 0, lowStockAlert: toNumber(r.lowStockAlert) || 0,
             },
           },
@@ -479,16 +502,21 @@ export const SPECS = {
         }
         const lines = [];
         const missing = [];
+        const itemInfo = {};
         for (const r of rows) {
           const it = ctx.item(r.item);
-          if (!it) { missing.push(r.item); continue; }
+          if (!it) {
+            missing.push(r.item);
+            itemInfo[r.item] = { baseUnit: unitOf(r.unit) || 'Piece', altUnit: r.altUnit ? unitOf(r.altUnit) : '', conversionRate: toNumber(r.perAlt) || 0 };
+            continue;
+          }
           const q = toNumber(r.qty) ?? 1;
           const price = toNumber(r.price);
           if (!(q > 0)) return { rows: rowNos, ref, error: `Row ${r.$row}: quantity must be more than 0` };
           if (price === null || price < 0) return { rows: rowNos, ref, error: `Row ${r.$row}: rate is missing` };
           lines.push({ itemId: it.id, qty: ctx.baseQty(it, q, r.unit), price: ctx.basePrice(it, price, q, r.unit), unit: it.baseUnit });
         }
-        if (missing.length) return { rows: rowNos, ref, error: `Item${missing.length === 1 ? '' : 's'} not found: ${[...new Set(missing)].join(', ')}`, need: { items: missing } };
+        if (missing.length) return { rows: rowNos, ref, error: `Item${missing.length === 1 ? '' : 's'} not found: ${[...new Set(missing)].join(', ')}`, need: { items: missing }, itemInfo };
         const total = billTotals(lines, ctx.roundingRule).total;
         const paidRaw = rows.map((r) => toNumber(r.paid)).find((v) => v !== null && v !== undefined);
         const paid = Math.min(r2(paidRaw || 0), total);
@@ -546,16 +574,21 @@ export const SPECS = {
         if (head.invoiceNo && used.has(`${sup.id}|${key(head.invoiceNo)}`)) return { rows: rowNos, ref, skip: `Invoice ${head.invoiceNo} from ${sup.name} is already in the system` };
         const lines = [];
         const missing = [];
+        const itemInfo = {};
         for (const r of rows) {
           const it = ctx.item(r.item);
-          if (!it) { missing.push(r.item); continue; }
+          if (!it) {
+            missing.push(r.item);
+            itemInfo[r.item] = { baseUnit: unitOf(r.unit) || 'Piece', altUnit: r.altUnit ? unitOf(r.altUnit) : '', conversionRate: toNumber(r.perAlt) || 0 };
+            continue;
+          }
           const q = toNumber(r.qty) ?? 1;
           const cost = toNumber(r.cost);
           if (!(q > 0)) return { rows: rowNos, ref, error: `Row ${r.$row}: quantity must be more than 0` };
           if (cost === null || cost < 0) return { rows: rowNos, ref, error: `Row ${r.$row}: cost is missing` };
           lines.push({ itemId: it.id, qty: ctx.baseQty(it, q, r.unit), costPrice: ctx.basePrice(it, cost, q, r.unit) });
         }
-        if (missing.length) return { rows: rowNos, ref, error: `Item${missing.length === 1 ? '' : 's'} not found: ${[...new Set(missing)].join(', ')}`, need: { items: missing } };
+        if (missing.length) return { rows: rowNos, ref, error: `Item${missing.length === 1 ? '' : 's'} not found: ${[...new Set(missing)].join(', ')}`, need: { items: missing }, itemInfo };
         const total = r2(lines.reduce((s, l) => s + l.qty * l.costPrice, 0));
         const paidRaw = rows.map((r) => toNumber(r.paid)).find((v) => v !== null && v !== undefined);
         if (head.invoiceNo) used.add(`${sup.id}|${key(head.invoiceNo)}`);
@@ -575,7 +608,7 @@ export const SPECS = {
 
   whMoves: {
     label: 'warehouse movements', title: 'Warehouse movements', grouped: true, batch: 12,
-    help: 'One row per item. Type is In, Out, Transfer, To shop, From shop, Adjust in or Adjust out. Rows with the same reference, type, warehouse and date become one document.',
+    help: 'One row per item. Alternate unit and Qty per alternate unit only matter for items not in the system yet: they are added with that packing. Type is In, Out, Transfer, To shop, From shop, Adjust in or Adjust out. Rows with the same reference, type, warehouse and date become one document.',
     fields: [
       F('type', 'Type', ['movement', 'movementtype', 'kind']),
       F('date', 'Date', [], { date: true }),
@@ -586,12 +619,14 @@ export const SPECS = {
       F('vehicleNo', 'Vehicle no', ['vehicle', 'truck']),
       F('driverName', 'Driver', ['drivername']),
       F('item', 'Item', ['product', 'itemname'], { required: true }),
-      F('qty', 'Qty', ['quantity', 'pcs']),
+      F('qty', 'Qty', ['quantity', 'pcs'], { prefer: ['tqty', 'totalqty'] }),
       F('unit', 'Unit', ['uom']),
+      F('altUnit', 'Alternate unit', ['alternateunit', 'altunit']),
+      F('perAlt', 'Qty per alternate unit', ['qtybag', 'qtyperbag', 'qtyperalternateunit', 'qtyperaltunit', 'perpack', 'packsize']),
       F('rate', 'Rate', ['price', 'cost'], { cost: true }),
       F('note', 'Note', ['remarks']),
     ],
-    example: ['In', '2026-03-03', 'Godown 2', '', 'GRN-778', 'City Balloon Wholesale', 'LES-1234', 'Rafiq', 'Balloon Pack 100', '40', 'Packet', '', ''],
+    example: ['In', '2026-03-03', 'Godown 2', '', 'GRN-778', 'City Balloon Wholesale', 'LES-1234', 'Rafiq', 'Balloon Pack 100', '40', 'Packet', 'Carton', '50', '', ''],
     needs: ['items'],
     plan(recs, data, ctx) {
       const done = new Set((data.whMoves || []).filter((m) => m.reference && m.status !== 'voided').map((m) => `${m.type}|${m.warehouseId}|${m.date}|${key(m.reference)}`));
@@ -621,15 +656,20 @@ export const SPECS = {
         if (head.reference && done.has(`${type}|${wh.id}|${date}|${key(head.reference)}`)) return { rows: rowNos, ref, skip: `${head.reference} is already recorded for ${wh.name}` };
         const lines = [];
         const missing = [];
+        const itemInfo = {};
         for (const r of rows) {
           const it = ctx.item(r.item);
-          if (!it) { missing.push(r.item); continue; }
+          if (!it) {
+            missing.push(r.item);
+            itemInfo[r.item] = { baseUnit: unitOf(r.unit) || 'Piece', altUnit: r.altUnit ? unitOf(r.altUnit) : '', conversionRate: toNumber(r.perAlt) || 0 };
+            continue;
+          }
           const q = toNumber(r.qty);
           if (!(q > 0)) return { rows: rowNos, ref, error: `Row ${r.$row}: quantity must be more than 0` };
           const rate = toNumber(r.rate);
           lines.push({ itemId: it.id, qty: ctx.baseQty(it, q, r.unit), unit: it.baseUnit, rate: rate === null ? '' : ctx.basePrice(it, rate, q, r.unit), note: r.note || '' });
         }
-        if (missing.length) return { rows: rowNos, ref, error: `Item${missing.length === 1 ? '' : 's'} not found: ${[...new Set(missing)].join(', ')}`, need: { items: missing } };
+        if (missing.length) return { rows: rowNos, ref, error: `Item${missing.length === 1 ? '' : 's'} not found: ${[...new Set(missing)].join(', ')}`, need: { items: missing }, itemInfo };
         // Stock in / out name who the goods came from or went to: that warehouse party's khata.
         if (!head.reference) {
           const sig = sigOf(type, wh.id, dest ? dest.id : '', date, head.party || '', lines);
@@ -661,8 +701,12 @@ export function autoMap(spec, headers) {
   const map = {};
   const taken = new Set();
   spec.fields.forEach((f) => {
-    const wanted = f.aliases.map(key);
-    const hit = headers.find((h) => !taken.has(h) && wanted.includes(key(h)));
+    // Aliases are in order of preference: "Total qty" beats "Qty" whichever column comes first.
+    let hit;
+    for (const a of f.aliases.map(key)) {
+      hit = headers.find((h) => !taken.has(h) && key(h) === a);
+      if (hit) break;
+    }
     if (hit) { map[f.key] = hit; taken.add(hit); }
   });
   return map;
@@ -712,7 +756,7 @@ export function makeContext(data, { methods = [], roundingRule = 'nearest1' } = 
 /** Everything a file would do, before anything is saved. */
 export function preview(spec, records, data, opts) {
   const ctx = makeContext(data, opts);
-  const out = { ops: [], skipped: [], errors: [], need: { parties: new Set(), items: new Set(), suppliers: new Set(), whParties: new Set() } };
+  const out = { ops: [], skipped: [], errors: [], need: { parties: new Set(), items: new Set(), suppliers: new Set(), whParties: new Set() }, itemInfo: {} };
   const bad = records.filter((r) => r.$badDate);
   const good = records.filter((r) => !r.$badDate);
   bad.forEach((r) => out.errors.push({ rows: [r.$row], ref: '', message: r.$badDate }));
@@ -727,18 +771,24 @@ export function preview(spec, records, data, opts) {
     if (p.op) out.ops.push({ ...p.op, ref: p.ref || `Row ${rows[0]}`, rows });
     else if (p.skip) out.skipped.push({ rows, ref: p.ref || '', message: p.skip });
     else if (p.error) out.errors.push({ rows, ref: p.ref || '', message: p.error });
+    if (p.itemInfo) Object.assign(out.itemInfo, p.itemInfo);
     if (p.need) Object.entries(p.need).forEach(([k, names]) => names.forEach((n) => n && out.need[k]?.add(String(n).trim())));
   });
   return out;
 }
 
 /** Saves that create the parties, suppliers, items and warehouse parties a file names but the system lacks. */
-export function creationOps(need, data) {
+export function creationOps(need, data, itemInfo = {}) {
   const ops = [];
   const exists = (list, n) => (list || []).some((x) => nameKey(x.name) === nameKey(n));
   [...need.parties].forEach((n) => { if (!exists(data.parties, n)) ops.push({ action: 'saveParty', payload: { name: n }, ref: `New party ${n}` }); });
   [...need.suppliers].forEach((n) => { if (!exists(data.suppliers, n)) ops.push({ action: 'saveSupplier', payload: { name: n, openingBalance: 0 }, ref: `New supplier ${n}` }); });
-  [...need.items].forEach((n) => { if (!exists(data.items, n)) ops.push({ action: 'saveItem', payload: { name: n, baseUnit: 'Piece' }, ref: `New item ${n}` }); });
+  [...need.items].forEach((n) => {
+    if (exists(data.items, n)) return;
+    const info = itemInfo[n] || {};
+    const packed = info.altUnit && info.conversionRate > 0;
+    ops.push({ action: 'saveItem', payload: { name: n, baseUnit: info.baseUnit || 'Piece', altUnit: packed ? info.altUnit : '', conversionRate: packed ? info.conversionRate : 0 }, ref: `New item ${n}` });
+  });
   [...(need.whParties || [])].forEach((n) => { if (!exists(data.whParties, n)) ops.push({ action: 'saveWhParty', payload: { name: n }, ref: `New warehouse party ${n}` }); });
   return ops;
 }
