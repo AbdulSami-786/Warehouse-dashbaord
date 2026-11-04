@@ -274,9 +274,13 @@ export function Typeahead({
 
   const selected = value ? items.find((x) => x.id === value) : null;
   const matches = useMemo(() => {
-    const s = norm(q);
-    return s
-      ? items.filter((x) => norm(getLabel(x)).includes(s) || norm(getSub(x)).includes(s)).slice(0, 50)
+    const words = norm(q).split(/\s+/).filter(Boolean);
+    // Every typed word must appear somewhere in the name/sub, in any order ("ballon red" finds "Red Ballon").
+    return words.length
+      ? items.filter((x) => {
+        const hay = `${norm(getLabel(x))} ${norm(getSub(x))}`;
+        return words.every((w) => hay.includes(w));
+      }).slice(0, 50)
       : items.slice(0, 50);
   }, [q, items, getLabel, getSub]);
 
