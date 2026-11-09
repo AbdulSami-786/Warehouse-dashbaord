@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import {
-  Archive, ArchiveRestore, Download, Package, Pencil, Plus,
+  Archive, ArchiveRestore, Download, Package, Pencil, Plus, Trash2,
 } from 'lucide-react';
 import { useApp } from '../lib/AppContext.jsx';
 import { api } from '../lib/api.js';
@@ -24,6 +24,7 @@ export default function Items() {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState(null);
   const [toggling, setToggling] = useState(null);
+  const [deleting, setDeleting] = useState(null);
   const categories = useMemo(() => [...new Set(data.items.map((i) => i.category).filter(Boolean))].sort(), [data.items]);
   const hasWarehouses = (data.warehouses || []).length > 0;
   const whStock = useMemo(() => warehouseStockMap(data), [data]);
@@ -52,6 +53,11 @@ export default function Items() {
     const it = toggling;
     setToggling(null);
     await mutate(() => api.archiveItem(it.id), it.status === 'archived' ? 'Item restored' : 'Item archived');
+  };
+  const remove = async () => {
+    const it = deleting;
+    setDeleting(null);
+    await mutate(() => api.deleteItem(it.id), `"${it.name}" deleted permanently`);
   };
   const toExcel = () => {
     exportCSV('Items', ['Item', 'Category', 'Base Unit', 'Alt Unit', 'Conversion', ...(sc ? ['Cost Price'] : []), 'Shop Stock', ...(hasWarehouses ? ['Warehouse Stock'] : []), 'Low Alert', ...(sc ? ['Stock Value'] : [])],
@@ -111,6 +117,9 @@ export default function Items() {
                           <button className="btn btn-ghost btn-sm" title={i.status === 'archived' ? 'Restore' : 'Archive'} onClick={() => setToggling(i)}>
                             {i.status === 'archived' ? <ArchiveRestore size={14} /> : <Archive size={14} />}
                           </button>
+                          {access.isAdmin && (
+                            <button className="btn btn-ghost btn-sm" title="Delete permanently" style={{ color: 'var(--danger)' }} onClick={() => setDeleting(i)}><Trash2 size={14} /></button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -135,6 +144,9 @@ export default function Items() {
                     <UnitSwitch item={i} unit={unitOf(i)} onPick={pickUnit} />
                     {hasWarehouses && i.inWh > 0 && <span>+{showQty(i, i.inWh)} in warehouses</span>}
                     {i.category && <span>{i.category}</span>}
+                    {access.isAdmin && (
+                      <button className="btn btn-ghost btn-sm" title="Delete permanently" style={{ color: 'var(--danger)', marginLeft: 'auto' }} onClick={(e) => { e.stopPropagation(); setDeleting(i); }}><Trash2 size={14} /></button>
+                    )}
                   </div>
                 </div>
               ))}
@@ -164,6 +176,15 @@ export default function Items() {
         confirmLabel={toggling?.status === 'archived' ? 'Restore' : 'Archive'}
         onConfirm={toggle}
         onCancel={() => setToggling(null)}
+      />
+      <Confirm
+        open={!!deleting}
+        danger
+        title="Delete item permanently?"
+        message={`"${deleting?.name}" will be removed for good and cannot be brought back. This only works for an item that was never used in a bill, purchase, return, loss or warehouse entry — otherwise archive it instead.`}
+        confirmLabel="Delete permanently"
+        onConfirm={remove}
+        onCancel={() => setDeleting(null)}
       />
     </>
   );

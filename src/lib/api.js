@@ -22,6 +22,7 @@ export const api = {
 
   saveItem: (p) => call('saveItem', p),
   archiveItem: (id) => call('archiveItem', { id }),
+  deleteItem: (id) => call('deleteItem', { id }),
 
   saveBill: (p) => call('saveBill', p),
   voidBill: (id, reason) => call('voidBill', { id, reason }),

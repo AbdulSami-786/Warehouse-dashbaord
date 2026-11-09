@@ -383,6 +383,7 @@ function dispatch(action, p, token) {
 
     case 'saveItem':         return saveItem(p);
     case 'archiveItem':      return toggleArchive('Items', p.id, 'item');
+    case 'deleteItem':       return deleteItem(p);
 
     case 'saveBill':         return saveBill(p);
     case 'voidBill':         return voidBill(p);
@@ -496,7 +497,7 @@ var ACTION_PAGES = {
   archiveParty: ['parties'], setPartyLock: ['parties'],
   createShareLink: ['parties'], revokeShareLink: ['parties'],
   saveItem: ['items', 'newBill', 'purchases', 'whStock', 'whMoves'],
-  archiveItem: ['items'],
+  archiveItem: ['items'], deleteItem: ['items'],
   saveBill: ['newBill', 'bills'],
   voidBill: ['bills', 'parties'], deleteBill: ['bills', 'parties'], setDelivery: ['bills', 'parties'], setLineDelivery: ['bills', 'parties'],
   deliverFromWarehouse: ['bills', 'parties'],
@@ -536,7 +537,7 @@ var MONEY_ACTIONS = {
 };
 var ALWAYS_ALLOWED = { bootstrap: 1, changePassword: 1, logout: 1 };
 var SUPER_ONLY = { listUsers: 1, saveUser: 1, deleteUser: 1, importBatch: 1 };
-var ADMIN_ONLY = { fullBackup: 1, syncPush: 1, deleteBill: 1 };
+var ADMIN_ONLY = { fullBackup: 1, syncPush: 1, deleteBill: 1, deleteItem: 1 };
 
 function normRole(r) {
   r = String(r || '').toLowerCase().replace(/[\s_-]/g, '');
@@ -2154,6 +2155,33 @@ function toggleArchive(tab, id, label) {
 /* ==========================================================================
    Items
    ========================================================================== */
+
+/**
+ * Permanently remove an item. Refused when anything was ever recorded against
+ * it — old bills, purchases, returns, losses or warehouse stock would lose the
+ * item they name — in which case it must be archived instead.
+ */
+function deleteItem(p) {
+  return withLock(function () {
+    var it = getById('Items', p.id);
+    if (!it) fail('Item not found');
+    var uses = [
+      ['bills', 'BillItems'], ['purchases', 'Purchases'], ['sales returns', 'Returns'],
+      ['supplier returns', 'SupplierReturns'], ['stock losses', 'StockLoss'],
+      ['warehouse stock entries', 'WarehouseMoveLines']
+    ];
+    var used = [];
+    uses.forEach(function (u) {
+      if (readAll(u[1]).some(function (r) { return r.itemId === p.id; })) used.push(u[0]);
+    });
+    if (used.length) fail('"' + it.name + '" is used in ' + used.join(', ') + ', so it cannot be deleted. Archive it instead.');
+    var prices = readAll('PartyItemPrices').filter(function (r) { return r.itemId === p.id; });
+    prices.forEach(function (r) { deleteRowById('PartyItemPrices', r.id); });
+    deleteRowById('Items', p.id);
+    logActivity('item', p.id, 'delete', 'Permanently deleted item "' + it.name + '"', it, null);
+    return { ok: true };
+  });
+}
 
 function saveItem(p) {
   return withLock(function () {

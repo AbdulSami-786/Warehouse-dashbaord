@@ -555,6 +555,23 @@ async function perform(action, p = {}) {
     case 'archiveItem':
       return toggleArchive(db, db.items, p.id, 'item', 'Item');
 
+    // Permanent removal. Only for an item nothing was ever recorded against;
+    // anything with history must be archived so old bills and stock still read.
+    case 'deleteItem': {
+      const it = db.items.find((x) => x.id === p.id);
+      if (!it) throw new Error('Item not found');
+      const used = [
+        ['bills', db.billItems], ['purchases', db.purchases], ['sales returns', db.returns],
+        ['supplier returns', db.supplierReturns], ['stock losses', db.stockLoss], ['warehouse stock entries', db.whMoveLines],
+      ].filter(([, rows]) => (rows || []).some((r) => r.itemId === p.id)).map(([label]) => label);
+      if (used.length) throw new Error(`"${it.name}" is used in ${used.join(', ')}, so it cannot be deleted. Archive it instead.`);
+      db.items = db.items.filter((x) => x.id !== p.id);
+      db.partyItemPrices = (db.partyItemPrices || []).filter((r) => r.itemId !== p.id);
+      log(db, 'item', p.id, 'delete', `Permanently deleted item "${it.name}"`, it, null);
+      save();
+      return { ok: true };
+    }
+
     /* ----- Bills ----- */
     case 'saveBill': {
       if (!p.partyId) throw new Error('Select a party');
