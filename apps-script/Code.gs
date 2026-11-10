@@ -2157,30 +2157,156 @@ function toggleArchive(tab, id, label) {
    ========================================================================== */
 
 /**
- * Permanently remove an item. Refused when anything was ever recorded against
- * it — old bills, purchases, returns, losses or warehouse stock would lose the
- * item they name — in which case it must be archived instead.
+ * Permanently remove an item.
+ *
+ * Without `everywhere` only the item itself goes; the old bills, purchases and
+ * so on that name it stay, and show it as a plain "Item". With `everywhere`
+ * every record that names the item goes with it (see purgeItemRecords).
  */
 function deleteItem(p) {
   return withLock(function () {
     var it = getById('Items', p.id);
     if (!it) fail('Item not found');
-    var uses = [
-      ['bills', 'BillItems'], ['purchases', 'Purchases'], ['sales returns', 'Returns'],
-      ['supplier returns', 'SupplierReturns'], ['stock losses', 'StockLoss'],
-      ['warehouse stock entries', 'WarehouseMoveLines']
-    ];
-    var used = [];
-    uses.forEach(function (u) {
-      if (readAll(u[1]).some(function (r) { return r.itemId === p.id; })) used.push(u[0]);
-    });
-    if (used.length) fail('"' + it.name + '" is used in ' + used.join(', ') + ', so it cannot be deleted. Archive it instead.');
-    var prices = readAll('PartyItemPrices').filter(function (r) { return r.itemId === p.id; });
-    prices.forEach(function (r) { deleteRowById('PartyItemPrices', r.id); });
-    deleteRowById('Items', p.id);
-    logActivity('item', p.id, 'delete', 'Permanently deleted item "' + it.name + '"', it, null);
-    return { ok: true };
+    var everywhere = p.everywhere === true || p.everywhere === 'true';
+    var removed = everywhere ? purgeItemRecords(it) : [];
+    readAll('PartyItemPrices').filter(function (r) { return r.itemId === it.id; })
+      .forEach(function (r) { deleteRowById('PartyItemPrices', r.id); });
+    deleteRowById('Items', it.id);
+    logActivity('item', it.id, 'delete',
+      'Permanently deleted item "' + it.name + '"' +
+      (everywhere ? (removed.length ? ' and removed it from ' + removed.join(', ') : ' everywhere (it was not used)') : ' (history kept)'),
+      it, null);
+    return { ok: true, removed: removed };
   });
+}
+
+/**
+ * Remove every record that names an item, keeping the books in step: a bill or
+ * purchase that has other items is recalculated, one that held only this item
+ * is deleted. Payments on a recalculated bill stay as they were. Returns a list
+ * of "3 bills"-style phrases. Mirror of purgeItem() in src/lib/localAdapter.js.
+ */
+function purgeItemRecords(it) {
+  var id = it.id;
+  var settings = readSettings();
+  var done = [];
+
+  // ---- Sales bills. Refuse first, before anything is changed.
+  var lines = readAll('BillItems');
+  var seen = {};
+  var billIds = [];
+  lines.forEach(function (l) { if (l.itemId === id && !seen[l.billId]) { seen[l.billId] = true; billIds.push(l.billId); } });
+  var setOffBills = {};
+  readAll('Payments').forEach(function (x) { if (x.method === 'Set-off') setOffBills[x.billId] = true; });
+  billIds.forEach(function (bid) {
+    var others = lines.some(function (l) { return l.billId === bid && l.itemId !== id; });
+    if (!others && setOffBills[bid]) {
+      var b = getById('Bills', bid);
+      fail('Bill ' + (b ? b.billNo : bid) + ' was part-cleared by a set-off and holds only this item. Delete that set-off payment first, then try again.');
+    }
+  });
+  var edited = 0, dropped = 0;
+  billIds.forEach(function (bid) {
+    var bill = getById('Bills', bid);
+    var rest = lines.filter(function (l) { return l.billId === bid && l.itemId !== id; });
+    lines.filter(function (l) { return l.billId === bid && l.itemId === id; })
+      .forEach(function (l) { deleteRowById('BillItems', l.id); });
+    if (!bill) return;
+    if (rest.length) {
+      var t = billTotalsFromLines(rest, settings.roundingRule);
+      updateRow('Bills', bill._row, { subtotal: t.subtotal, roundOff: t.roundOff, totalAmount: t.total });
+      syncBillDeliveryFlag(bid);
+      edited++;
+    } else {
+      dropBillRecords(bill);
+      dropped++;
+    }
+  });
+  if (edited) done.push(edited + ' bill' + (edited === 1 ? '' : 's') + ' (recalculated)');
+  if (dropped) done.push(dropped + ' bill' + (dropped === 1 ? '' : 's') + ' (deleted, nothing else on them)');
+
+  // ---- Sales returns that are left.
+  var rets = readAll('Returns').filter(function (r) { return r.itemId === id; });
+  rets.forEach(function (r) { deleteRowById('Returns', r.id); });
+  if (rets.length) done.push(rets.length + ' sales return' + (rets.length === 1 ? '' : 's'));
+
+  // ---- Purchases and returns to suppliers.
+  var purs = readAll('Purchases').filter(function (x) { return x.itemId === id; });
+  var pbSeen = {};
+  var pbIds = [];
+  purs.forEach(function (x) { if (x.purchaseBillId && !pbSeen[x.purchaseBillId]) { pbSeen[x.purchaseBillId] = true; pbIds.push(x.purchaseBillId); } });
+  purs.forEach(function (x) { deleteRowById('Purchases', x.id); });
+  var srets = readAll('SupplierReturns').filter(function (r) { return r.itemId === id; });
+  srets.forEach(function (r) { deleteRowById('SupplierReturns', r.id); });
+  var pbDropped = 0;
+  pbIds.forEach(function (pid) {
+    var pb = getById('PurchaseBills', pid);
+    if (!pb) return;
+    if (readAll('Purchases').some(function (x) { return x.purchaseBillId === pid; })) {
+      recomputePurchaseBill(pid);
+    } else {
+      readAll('SupplierPayments').forEach(function (sp) {
+        if (sp.purchaseBillId === pid) updateRow('SupplierPayments', findRow('SupplierPayments', sp.id), { purchaseBillId: '' });
+      });
+      deleteRowById('PurchaseBills', pid);
+      pbDropped++;
+    }
+  });
+  if (purs.length) done.push(purs.length + ' purchase line' + (purs.length === 1 ? '' : 's') + (pbDropped ? ' (' + pbDropped + ' purchase bill' + (pbDropped === 1 ? '' : 's') + ' removed)' : ''));
+  if (srets.length) done.push(srets.length + ' supplier return' + (srets.length === 1 ? '' : 's'));
+
+  // ---- Stock losses, with the expense each one wrote.
+  var losses = readAll('StockLoss').filter(function (l) { return l.itemId === id; });
+  if (losses.length) {
+    var lossIds = {};
+    losses.forEach(function (l) { lossIds[l.id] = l.linkedExpenseId || true; });
+    readAll('Expenses').forEach(function (e) {
+      if (lossIds[e.linkedStockLossId]) deleteRowById('Expenses', e.id);
+    });
+    losses.forEach(function (l) { deleteRowById('StockLoss', l.id); });
+    done.push(losses.length + ' stock loss' + (losses.length === 1 ? '' : 'es'));
+  }
+
+  // ---- Warehouse entries; a movement left with no items is removed.
+  var wl = readAll('WarehouseMoveLines');
+  var mine = wl.filter(function (l) { return l.itemId === id; });
+  if (mine.length) {
+    var moveSeen = {};
+    var moveIds = [];
+    mine.forEach(function (l) { if (!moveSeen[l.moveId]) { moveSeen[l.moveId] = true; moveIds.push(l.moveId); } });
+    mine.forEach(function (l) { deleteRowById('WarehouseMoveLines', l.id); });
+    var mvGone = 0;
+    moveIds.forEach(function (mid) {
+      if (!wl.some(function (l) { return l.moveId === mid && l.itemId !== id; })) {
+        deleteRowById('WarehouseMoves', mid);
+        mvGone++;
+      }
+    });
+    done.push(mine.length + ' warehouse entr' + (mine.length === 1 ? 'y' : 'ies') + (mvGone ? ' (' + mvGone + ' empty movement' + (mvGone === 1 ? '' : 's') + ' removed)' : ''));
+  }
+  return done;
+}
+
+/**
+ * Delete a bill with its payments, cheques and returns (its lines are already
+ * handled or are removed here). Shared by deleteBill and purgeItemRecords;
+ * the caller holds the lock and has refused set-off bills.
+ */
+function dropBillRecords(bill) {
+  var pays = readAll('Payments').filter(function (x) { return x.billId === bill.id; });
+  var payIds = {};
+  pays.forEach(function (x) { payIds[x.id] = true; });
+  var cheques = readAll('Cheques').filter(function (c) { return c.billId === bill.id || payIds[c.paymentId]; });
+  var returns = readAll('Returns').filter(function (r) { return r.billId === bill.id; });
+  pays.forEach(function (x) {
+    if (x.method === 'Advance' && !x.isAdvance && !x.reversed) restoreAdvance(x.partyId, x.amount);
+    deleteRowById('Payments', x.id);
+  });
+  cheques.forEach(function (c) { deleteRowById('Cheques', c.id); });
+  deleteRowsWhere('Returns', 'billId', bill.id);
+  deleteRowsWhere('BillItems', 'billId', bill.id);
+  deleteRowById('Bills', bill.id);
+  return { payments: pays.length, cheques: cheques.length, returns: returns.length };
 }
 
 function saveItem(p) {
@@ -2844,32 +2970,19 @@ function deleteBill(p) {
     var bill = getById('Bills', p.id);
     if (!bill) fail('Bill not found');
 
-    var pays = readAll('Payments').filter(function (x) { return x.billId === bill.id; });
-    if (pays.some(function (x) { return x.method === 'Set-off'; })) {
+    var hasSetOff = readAll('Payments').some(function (x) { return x.billId === bill.id && x.method === 'Set-off'; });
+    if (hasSetOff) {
       fail('Part of this bill was cleared by a set-off. Delete that set-off payment first, then delete the bill.');
     }
-    var payIds = {};
-    pays.forEach(function (x) { payIds[x.id] = true; });
-
-    var cheques = readAll('Cheques').filter(function (c) { return c.billId === bill.id || payIds[c.paymentId]; });
-    var returns = readAll('Returns').filter(function (r) { return r.billId === bill.id; });
-
-    pays.forEach(function (x) {
-      if (x.method === 'Advance' && !x.isAdvance && !x.reversed) restoreAdvance(x.partyId, x.amount);
-      deleteRowById('Payments', x.id);
-    });
-    cheques.forEach(function (c) { deleteRowById('Cheques', c.id); });
-    deleteRowsWhere('Returns', 'billId', bill.id);
-    deleteRowsWhere('BillItems', 'billId', bill.id);
-    deleteRowById('Bills', bill.id);
+    var gone = dropBillRecords(bill);
 
     logActivity('bill', bill.id, 'delete',
       'Deleted Bill ' + bill.billNo +
-      (pays.length ? ', ' + pays.length + ' payment' + (pays.length === 1 ? '' : 's') : '') +
-      (cheques.length ? ', ' + cheques.length + ' cheque' + (cheques.length === 1 ? '' : 's') : '') +
-      (returns.length ? ', ' + returns.length + ' return' + (returns.length === 1 ? '' : 's') : '') +
+      (gone.payments ? ', ' + gone.payments + ' payment' + (gone.payments === 1 ? '' : 's') : '') +
+      (gone.cheques ? ', ' + gone.cheques + ' cheque' + (gone.cheques === 1 ? '' : 's') : '') +
+      (gone.returns ? ', ' + gone.returns + ' return' + (gone.returns === 1 ? '' : 's') : '') +
       (p.reason ? ' — ' + p.reason : ''), bill, null);
-    return { ok: true, payments: pays.length, cheques: cheques.length, returns: returns.length };
+    return { ok: true, payments: gone.payments, cheques: gone.cheques, returns: gone.returns };
   });
 }
 

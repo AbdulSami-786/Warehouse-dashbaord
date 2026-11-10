@@ -261,6 +261,31 @@ export function reorderSuggestion(partyId, bills = []) {
 /* ------------------------------------------------------------------ Stock */
 
 /**
+ * Where an item has been recorded: [{ key, label, count, refs }] for every
+ * place it appears, `refs` being short names (bill numbers, dates) to show.
+ * Used to tell the user what deleting the item would touch.
+ */
+export function itemUsage(itemId, {
+  bills = [], billItems = [], purchases = [], purchaseBills = [], returns = [],
+  supplierReturns = [], stockLoss = [], whMoves = [], whMoveLines = [],
+} = {}) {
+  const uniq = (a) => [...new Set(a.filter(Boolean))];
+  const billNo = new Map(bills.map((b) => [b.id, b.billNo]));
+  const purNo = new Map(purchaseBills.map((b) => [b.id, b.purchaseNo]));
+  const docNo = new Map(whMoves.map((m) => [m.id, m.docNo]));
+  const on = (r) => `on ${String(r.date || '').slice(0, 10)}`;
+  const groups = [
+    { key: 'bills', label: 'Sales bills', refs: uniq(billItems.filter((l) => l.itemId === itemId).map((l) => billNo.get(l.billId) || 'a bill')) },
+    { key: 'returns', label: 'Sales returns', refs: returns.filter((r) => r.itemId === itemId).map((r) => `${billNo.get(r.billId) ? `Bill ${billNo.get(r.billId)} ` : ''}${on(r)}`) },
+    { key: 'purchases', label: 'Purchases', refs: uniq(purchases.filter((x) => x.itemId === itemId).map((x) => purNo.get(x.purchaseBillId) || `Purchase ${on(x)}`)) },
+    { key: 'supplierReturns', label: 'Returns to suppliers', refs: supplierReturns.filter((r) => r.itemId === itemId).map((r) => `Return ${on(r)}`) },
+    { key: 'stockLoss', label: 'Stock losses', refs: stockLoss.filter((l) => l.itemId === itemId).map((l) => `Loss ${on(l)}`) },
+    { key: 'warehouse', label: 'Warehouse stock entries', refs: uniq(whMoveLines.filter((l) => l.itemId === itemId).map((l) => docNo.get(l.moveId) || 'a movement')) },
+  ];
+  return groups.filter((g) => g.refs.length).map((g) => ({ ...g, count: g.refs.length }));
+}
+
+/**
  * Shop stock of one item: opening + bought − sold + restocked returns − lost
  * − returned to supplier + received from a warehouse − sent to a warehouse.
  */

@@ -555,21 +555,20 @@ async function perform(action, p = {}) {
     case 'archiveItem':
       return toggleArchive(db, db.items, p.id, 'item', 'Item');
 
-    // Permanent removal. Only for an item nothing was ever recorded against;
-    // anything with history must be archived so old bills and stock still read.
+    // Permanent removal. Without `everywhere` only the item goes and old
+    // records that name it stay (shown as a plain "Item"); with it, every
+    // record that names the item is removed too (see purgeItem).
     case 'deleteItem': {
       const it = db.items.find((x) => x.id === p.id);
       if (!it) throw new Error('Item not found');
-      const used = [
-        ['bills', db.billItems], ['purchases', db.purchases], ['sales returns', db.returns],
-        ['supplier returns', db.supplierReturns], ['stock losses', db.stockLoss], ['warehouse stock entries', db.whMoveLines],
-      ].filter(([, rows]) => (rows || []).some((r) => r.itemId === p.id)).map(([label]) => label);
-      if (used.length) throw new Error(`"${it.name}" is used in ${used.join(', ')}, so it cannot be deleted. Archive it instead.`);
-      db.items = db.items.filter((x) => x.id !== p.id);
-      db.partyItemPrices = (db.partyItemPrices || []).filter((r) => r.itemId !== p.id);
-      log(db, 'item', p.id, 'delete', `Permanently deleted item "${it.name}"`, it, null);
+      const everywhere = p.everywhere === true || p.everywhere === 'true';
+      const removed = everywhere ? purgeItem(db, it.id) : [];
+      db.items = db.items.filter((x) => x.id !== it.id);
+      db.partyItemPrices = (db.partyItemPrices || []).filter((r) => r.itemId !== it.id);
+      log(db, 'item', it.id, 'delete', `Permanently deleted item "${it.name}"` +
+        (everywhere ? (removed.length ? ` and removed it from ${removed.join(', ')}` : ' everywhere (it was not used)') : ' (history kept)'), it, null);
       save();
-      return { ok: true };
+      return { ok: true, removed };
     }
 
     /* ----- Bills ----- */
@@ -816,16 +815,7 @@ async function perform(action, p = {}) {
       if (pays.some((x) => x.method === 'Set-off')) {
         throw new Error('Part of this bill was cleared by a set-off. Delete that set-off payment first, then delete the bill.');
       }
-      const payIds = new Set(pays.map((x) => x.id));
-      // Money taken from the party's advance goes back to it.
-      pays.forEach((x) => { if (x.method === 'Advance' && !x.isAdvance && !x.reversed) restoreAdvance(db, x.partyId, x.amount); });
-      const cheques = db.cheques.filter((c) => c.billId === bill.id || payIds.has(c.paymentId));
-      const returns = db.returns.filter((r) => r.billId === bill.id);
-      db.cheques = db.cheques.filter((c) => !cheques.includes(c));
-      db.payments = db.payments.filter((x) => !payIds.has(x.id));
-      db.returns = db.returns.filter((r) => r.billId !== bill.id);
-      db.billItems = db.billItems.filter((l) => l.billId !== bill.id);
-      db.bills.splice(i, 1);
+      const { cheques, returns } = dropBill(db, bill);
       log(db, 'bill', bill.id, 'delete', `Deleted Bill ${bill.billNo}` +
         (pays.length ? `, ${pays.length} payment${pays.length === 1 ? '' : 's'}` : '') +
         (cheques.length ? `, ${cheques.length} cheque${cheques.length === 1 ? '' : 's'}` : '') +
@@ -1990,6 +1980,112 @@ async function perform(action, p = {}) {
     default:
       throw new Error(`Unknown action: ${action}`);
   }
+}
+
+/**
+ * Delete a bill with its payments, cheques, returns and lines. Money taken
+ * from the party's advance goes back to it. The caller has already refused
+ * bills part-cleared by a set-off.
+ */
+function dropBill(db, bill) {
+  const pays = db.payments.filter((x) => x.billId === bill.id);
+  const payIds = new Set(pays.map((x) => x.id));
+  pays.forEach((x) => { if (x.method === 'Advance' && !x.isAdvance && !x.reversed) restoreAdvance(db, x.partyId, x.amount); });
+  const cheques = db.cheques.filter((c) => c.billId === bill.id || payIds.has(c.paymentId));
+  const returns = db.returns.filter((r) => r.billId === bill.id);
+  db.cheques = db.cheques.filter((c) => !cheques.includes(c));
+  db.payments = db.payments.filter((x) => !payIds.has(x.id));
+  db.returns = db.returns.filter((r) => r.billId !== bill.id);
+  db.billItems = db.billItems.filter((l) => l.billId !== bill.id);
+  db.bills = db.bills.filter((b) => b.id !== bill.id);
+  return { payments: pays, cheques, returns };
+}
+
+/**
+ * Remove every record that names an item, keeping the books in step: a bill or
+ * purchase that has other items is recalculated, one that held only this item
+ * is deleted. Payments on a recalculated bill stay as they were. Returns
+ * "3 bills"-style phrases. Mirror of purgeItemRecords() in Code.gs.
+ */
+function purgeItem(db, id) {
+  const done = [];
+  const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+  // Sales bills. Refuse first, before anything is changed.
+  const billIds = [...new Set(db.billItems.filter((l) => l.itemId === id).map((l) => l.billId))];
+  for (const bid of billIds) {
+    const others = db.billItems.some((l) => l.billId === bid && l.itemId !== id);
+    if (!others && db.payments.some((x) => x.billId === bid && x.method === 'Set-off')) {
+      const b = db.bills.find((x) => x.id === bid);
+      throw new Error(`Bill ${b?.billNo || bid} was part-cleared by a set-off and holds only this item. Delete that set-off payment first, then try again.`);
+    }
+  }
+  let edited = 0;
+  let dropped = 0;
+  for (const bid of billIds) {
+    const bill = db.bills.find((b) => b.id === bid);
+    db.billItems = db.billItems.filter((l) => !(l.billId === bid && l.itemId === id));
+    if (!bill) continue;
+    const rest = db.billItems.filter((l) => l.billId === bid);
+    if (rest.length) {
+      const t = billTotals(rest.map((l) => ({ qty: Number(l.qty), price: Number(l.price) })), db.settings.roundingRule);
+      bill.subtotal = t.subtotal;
+      bill.roundOff = t.roundOff;
+      bill.totalAmount = t.total;
+      syncDeliveryFlag(db, bill);
+      edited++;
+    } else {
+      dropBill(db, bill);
+      dropped++;
+    }
+  }
+  if (edited) done.push(`${plural(edited, 'bill')} (recalculated)`);
+  if (dropped) done.push(`${plural(dropped, 'bill')} (deleted, nothing else on them)`);
+
+  // Sales returns that are left.
+  const rets = db.returns.filter((r) => r.itemId === id);
+  db.returns = db.returns.filter((r) => r.itemId !== id);
+  if (rets.length) done.push(plural(rets.length, 'sales return'));
+
+  // Purchases and returns to suppliers.
+  const purs = db.purchases.filter((x) => x.itemId === id);
+  const pbIds = [...new Set(purs.map((x) => x.purchaseBillId).filter(Boolean))];
+  db.purchases = db.purchases.filter((x) => x.itemId !== id);
+  const srets = db.supplierReturns.filter((r) => r.itemId === id);
+  db.supplierReturns = db.supplierReturns.filter((r) => r.itemId !== id);
+  let pbDropped = 0;
+  for (const pid of pbIds) {
+    const pb = db.purchaseBills.find((b) => b.id === pid);
+    if (!pb) continue;
+    if (db.purchases.some((x) => x.purchaseBillId === pid)) recomputePurchaseBill(db, pb);
+    else {
+      db.supplierPayments.forEach((sp) => { if (sp.purchaseBillId === pid) sp.purchaseBillId = ''; });
+      db.purchaseBills = db.purchaseBills.filter((b) => b.id !== pid);
+      pbDropped++;
+    }
+  }
+  if (purs.length) done.push(`${plural(purs.length, 'purchase line')}${pbDropped ? ` (${plural(pbDropped, 'purchase bill')} removed)` : ''}`);
+  if (srets.length) done.push(plural(srets.length, 'supplier return'));
+
+  // Stock losses, with the expense each one wrote.
+  const losses = db.stockLoss.filter((l) => l.itemId === id);
+  if (losses.length) {
+    const lossIds = new Set(losses.map((l) => l.id));
+    db.expenses = db.expenses.filter((e) => !lossIds.has(e.linkedStockLossId));
+    db.stockLoss = db.stockLoss.filter((l) => l.itemId !== id);
+    done.push(plural(losses.length, 'stock loss', 'stock losses'));
+  }
+
+  // Warehouse entries; a movement left with no items is removed.
+  const mine = db.whMoveLines.filter((l) => l.itemId === id);
+  if (mine.length) {
+    const moveIds = [...new Set(mine.map((l) => l.moveId))];
+    db.whMoveLines = db.whMoveLines.filter((l) => l.itemId !== id);
+    const empty = new Set(moveIds.filter((mid) => !db.whMoveLines.some((l) => l.moveId === mid)));
+    db.whMoves = db.whMoves.filter((m) => !empty.has(m.id));
+    done.push(`${plural(mine.length, 'warehouse entry', 'warehouse entries')}${empty.size ? ` (${plural(empty.size, 'empty movement')} removed)` : ''}`);
+  }
+  return done;
 }
 
 function toggleArchive(db, list, id, type, label) {

@@ -5,7 +5,7 @@ import {
 import { useApp } from '../lib/AppContext.jsx';
 import { api } from '../lib/api.js';
 import { money, r2, fmtDate, norm } from '../lib/format.js';
-import { itemStock, warehouseStockMap } from '../lib/calc.js';
+import { itemStock, itemUsage, warehouseStockMap } from '../lib/calc.js';
 import { exportCSV } from '../lib/exporters.js';
 import {
   Button, Card, Confirm, Empty, Modal, Money, PageHead, Pill, SearchBox, Select,
@@ -54,10 +54,12 @@ export default function Items() {
     setToggling(null);
     await mutate(() => api.archiveItem(it.id), it.status === 'archived' ? 'Item restored' : 'Item archived');
   };
-  const remove = async () => {
+  const usage = useMemo(() => (deleting ? itemUsage(deleting.id, data) : []), [deleting, data]);
+  const remove = async (everywhere) => {
     const it = deleting;
     setDeleting(null);
-    await mutate(() => api.deleteItem(it.id), `"${it.name}" deleted permanently`);
+    await mutate(() => api.deleteItem(it.id, everywhere),
+      everywhere ? `"${it.name}" removed from everywhere` : `"${it.name}" deleted from items`);
   };
   const toExcel = () => {
     exportCSV('Items', ['Item', 'Category', 'Base Unit', 'Alt Unit', 'Conversion', ...(sc ? ['Cost Price'] : []), 'Shop Stock', ...(hasWarehouses ? ['Warehouse Stock'] : []), 'Low Alert', ...(sc ? ['Stock Value'] : [])],
@@ -177,15 +179,45 @@ export default function Items() {
         onConfirm={toggle}
         onCancel={() => setToggling(null)}
       />
-      <Confirm
-        open={!!deleting}
-        danger
-        title="Delete item permanently?"
-        message={`"${deleting?.name}" will be removed for good and cannot be brought back. This only works for an item that was never used in a bill, purchase, return, loss or warehouse entry — otherwise archive it instead.`}
-        confirmLabel="Delete permanently"
-        onConfirm={remove}
-        onCancel={() => setDeleting(null)}
-      />
+      {deleting && !usage.length && (
+        <Confirm
+          open
+          danger
+          title="Delete item permanently?"
+          message={`"${deleting.name}" is not used anywhere. It will be removed for good and cannot be brought back.`}
+          confirmLabel="Delete permanently"
+          onConfirm={() => remove(false)}
+          onCancel={() => setDeleting(null)}
+        />
+      )}
+      <Modal
+        open={!!deleting && usage.length > 0}
+        title={`Delete "${deleting?.name || ''}"?`}
+        onClose={() => setDeleting(null)}
+        footer={(
+          <>
+            <Button onClick={() => setDeleting(null)}>Cancel</Button>
+            <Button onClick={() => remove(false)}>Delete item only</Button>
+            <Button variant="danger" onClick={() => remove(true)}>Remove from everywhere</Button>
+          </>
+        )}
+      >
+        <p style={{ margin: '0 0 10px', fontSize: 14, lineHeight: 1.6 }}>This item is used here:</p>
+        <ul style={{ margin: '0 0 12px', paddingLeft: 18, fontSize: 14, lineHeight: 1.6 }}>
+          {usage.map((g) => (
+            <li key={g.key}>
+              <strong>{g.label} ({g.count})</strong>
+              <div className="small muted">{g.refs.slice(0, 8).join(', ')}{g.refs.length > 8 ? ` and ${g.refs.length - 8} more` : ''}</div>
+            </li>
+          ))}
+        </ul>
+        <p style={{ margin: '0 0 8px', fontSize: 13, lineHeight: 1.6 }}>
+          <strong>Delete item only</strong> — removes it from the Items list. Old bills and records keep their lines, but show it as just "Item"; those old bills can no longer be edited.
+        </p>
+        <p style={{ margin: 0, fontSize: 13, lineHeight: 1.6 }}>
+          <strong>Remove from everywhere</strong> — also takes its lines out of every place above. Bills and purchases with other items are recalculated (payments stay as they are); ones with only this item are deleted. This cannot be undone.
+        </p>
+      </Modal>
     </>
   );
 }
