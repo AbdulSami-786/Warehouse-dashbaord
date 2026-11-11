@@ -19,7 +19,7 @@ const RETRYABLE = new Set([
   'saveCheque', 'settleParty',
   'savePurchaseBill', 'addSupplierPayment', 'addSupplierReturn', 'saveSupplier',
   'setOffParty',
-  'saveWarehouse', 'saveWhMove', 'saveWhExpense',
+  'saveWarehouse', 'saveWhMove', 'updateWhMove', 'saveWhExpense',
   'saveStockCount', 'importBatch', 'listUsers',
   'saveWhParty', 'addWhPartyPayment', 'saveJournal', 'addJournalPayment',
   'syncPush',

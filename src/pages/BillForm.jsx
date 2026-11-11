@@ -8,7 +8,7 @@ import { api } from '../lib/api.js';
 import { UNITS } from '../lib/config.js';
 import { money, r2, today, addDays, fmtDate, uid } from '../lib/format.js';
 import {
-  billTotals, billState, billStates, partyDue, advanceAvailable, itemStock, warehouseStockMap, unitFactor,
+  billTotals, billState, billStates, partyDue, advanceAvailable, itemStock, warehouseStockMap, unitFactor, packEquiv,
 } from '../lib/calc.js';
 import { printBill } from '../lib/exporters.js';
 import {
@@ -760,13 +760,17 @@ export default function BillForm() {
         cheques={data.cheques}
         returns={savedId ? data.returns.filter((r) => r.billId === savedId) : []}
         itemName={(iid) => data.items.find((i) => i.id === iid)?.name || 'Item'}
+        packOf={(l) => packEquiv(data.items.find((i) => i.id === l.itemId), l.qty, l.unit)}
         party={savedState ? data.parties.find((p) => p.id === savedState.partyId) : null}
         shopName={settings.shopName}
         onPrint={() => {
           if (!savedState) return;
           printBill({
             bill: savedState,
-            lines: data.billItems.filter((l) => l.billId === savedId).map((l) => ({ ...l, itemName: data.items.find((i) => i.id === l.itemId)?.name || 'Item' })),
+            lines: data.billItems.filter((l) => l.billId === savedId).map((l) => {
+              const it = data.items.find((i) => i.id === l.itemId);
+              return { ...l, itemName: it?.name || 'Item', pack: packEquiv(it, l.qty, l.unit) };
+            }),
             party: data.parties.find((p) => p.id === savedState.partyId),
             payments: data.payments.filter((p) => p.billId === savedId && !p.reversed),
             settings,

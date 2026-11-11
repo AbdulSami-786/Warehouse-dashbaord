@@ -2779,3 +2779,34 @@ body.no-cost .cost-only { display: none !important; }
 .sync-error { background: var(--danger-bg); border-color: #FECACA; color: #B91C1C; margin-bottom: 10px; }
 .sync-problems { margin: 0; padding-left: 18px; max-height: 220px; overflow: auto; }
 .sync-problems li { margin-bottom: 8px; }
+
+/* ---- Shared ledger: ruled account-book look ---- */
+.ledger-sheet { border: 1px solid var(--border-strong); }
+.ledger-title {
+  display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; flex-wrap: wrap;
+  padding: 16px 18px 14px; border-bottom: 3px double var(--primary); background: var(--brand-yellow-soft);
+}
+.ledger-kicker { font-size: 10.5px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--primary); }
+.ledger-name { margin: 2px 0 3px; font-size: 20px; font-weight: 800; }
+.ledger-title-right { text-align: right; display: grid; gap: 4px; justify-items: end; }
+.ledger-closing { font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; }
+table.ledger-book { border-collapse: collapse; width: 100%; border: 0; }
+table.ledger-book thead th {
+  background: var(--primary); color: #fff; font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase;
+  padding: 9px 10px; border: 1px solid #6e100c; position: static;
+}
+table.ledger-book tbody td {
+  border: 1px solid var(--border-strong); padding: 8px 10px; background-image: none;
+}
+table.ledger-book tbody td:nth-child(n+3) { font-variant-numeric: tabular-nums; }
+table.ledger-book tbody tr:nth-child(even) td { background: #fcfcfd; }
+table.ledger-book tfoot td { border: 1px solid var(--border-strong); padding: 8px 10px; font-weight: 700; background: #f7f7f8; }
+table.ledger-book tfoot tr.ledger-total td { border-top: 2px solid var(--text, #111); }
+table.ledger-book tfoot tr.ledger-close td { border-top: 3px double var(--text, #111); background: var(--brand-yellow-soft); font-size: 14px; }
+@media print {
+  .ledger-print-show { display: block !important; }
+  .ledger-sheet ~ .mcards, .ledger-sheet .mcards { display: none !important; }
+  .ledger-sheet { border: 0; }
+  table.ledger-book thead th { background: #8F1712 !important; color: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .seg, .ledger-sheet .no-print { display: none !important; }
+}

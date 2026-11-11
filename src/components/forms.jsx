@@ -213,7 +213,7 @@ function TotalRow({ label, value, showSign = false, muted = false, tone }) {
 /** On-screen receipt shown after saving a bill, and on the shared ledger page. */
 export function BillPreview({
   open, onClose, bill, lines = [], payments = [], cheques = [], returns = [], itemName = (x) => x,
-  party, shopName, readOnly = false, onPrint, onPDF,
+  party, shopName, readOnly = false, onPrint, onPDF, packOf = () => '',
 }) {
   if (!bill) return null;
   const live = payments.filter((p) => !p.reversed);
@@ -255,7 +255,10 @@ export function BillPreview({
                   <td className="muted">{i + 1}</td>
                   <td style={{ fontWeight: 500 }}>{itemName(l.itemId)}</td>
                   <td className="r">{l.qty}</td>
-                  <td>{l.unit}</td>
+                  <td>
+                    {l.unit}
+                    {packOf(l) && <div className="small muted nowrap">= {packOf(l)}</div>}
+                  </td>
                   <td className="r"><Money value={l.price} /></td>
                   <td className="r strong"><Money value={(Number(l.qty) || 0) * (Number(l.price) || 0)} /></td>
                 </tr>

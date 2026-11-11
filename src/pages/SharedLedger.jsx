@@ -1,7 +1,7 @@
 import { Fragment, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import {
-  ChevronDown, ChevronRight, ClipboardList, Lock, Receipt, ShieldCheck,
+  ChevronDown, ChevronRight, ClipboardList, Lock, Printer, Receipt, ShieldCheck,
 } from 'lucide-react';
 import { api } from '../lib/api.js';
 import {
@@ -11,7 +11,7 @@ import {
   billStates, partyLedger, journalFieldList, whPartyKhata, whPartyTotals, partName,
 } from '../lib/calc.js';
 import {
-  Button, Empty, Field, Input, Money, Pill,
+  Button, Empty, Field, Money, PasswordInput, Pill,
 } from '../components/ui.jsx';
 import { BillPreview } from '../components/forms.jsx';
 import { LOGO } from '../components/Layout.jsx';
@@ -35,6 +35,9 @@ function AcunnityNav() {
     </div>
   );
 }
+
+/** A balance the way a ledger writes it: Dr when they owe the shop, Cr when the shop owes them. */
+const drcr = (b) => (b > 0.004 ? `${money(b)} Dr` : b < -0.004 ? `${money(-b)} Cr` : money(0));
 
 /**
  * Every entry on the account in date order — bills, payments, cheques, returns
@@ -62,18 +65,36 @@ function FullStatement({ data, onBill }) {
     if (r.parts) toggle(r);
     else if (r.billId && !r.isPart) onBill(r.billId);
   };
+  const totalDebit = r2(ledger.reduce((s, r) => s + r.debit, 0));
+  const totalCredit = r2(ledger.reduce((s, r) => s + r.credit, 0));
+  const first = ledger.length ? ledger[0].date : null;
+  const last = ledger.length ? ledger[ledger.length - 1].date : null;
   return (
-    <div className="card" style={{ overflow: 'hidden' }}>
-      <div className="card-head"><h2 className="h2">Account Statement</h2></div>
+    <div className="card ledger-sheet" style={{ overflow: 'hidden' }}>
+      <div className="ledger-title">
+        <div>
+          <div className="ledger-kicker">Ledger account</div>
+          <h2 className="ledger-name">{data.party?.name}</h2>
+          <div className="small muted">
+            {data.shopName}
+            {first && last ? ` · ${fmtDate(first)} to ${fmtDate(last)}` : ''}
+          </div>
+        </div>
+        <div className="ledger-title-right">
+          <div className="ledger-kicker">Closing balance</div>
+          <div className="ledger-closing" style={{ color: closing > 0.004 ? 'var(--danger)' : 'var(--success)' }}>{drcr(closing)}</div>
+          <Button size="sm" icon={Printer} className="no-print" onClick={() => window.print()}>Print</Button>
+        </div>
+      </div>
       {ledger.length ? (
         <>
-          <div className="table-wrap hide-mobile">
-            <table className="tbl stmt-tbl">
+          <div className="table-wrap hide-mobile ledger-print-show">
+            <table className="tbl stmt-tbl ledger-book">
               <thead>
                 <tr>
-                  <th style={{ width: 96 }}>Date</th><th>Particulars</th><th style={{ width: 108 }}>Method</th>
-                  <th className="r" style={{ width: 110 }}>Debit (+)</th><th className="r" style={{ width: 110 }}>Credit (−)</th>
-                  <th className="r" style={{ width: 120 }}>Balance</th>
+                  <th style={{ width: 92 }}>Date</th><th>Particulars</th>
+                  <th className="r" style={{ width: 116 }}>Debit</th><th className="r" style={{ width: 116 }}>Credit</th>
+                  <th className="r" style={{ width: 132 }}>Balance</th>
                 </tr>
               </thead>
               <tbody>
@@ -91,9 +112,8 @@ function FullStatement({ data, onBill }) {
                         {r.parts && ' '}
                         {r.isPart ? `↳ ${partName(r)}` : r.title}
                       </div>
-                      {r.detail && <div className="small muted">{r.detail}</div>}
+                      {(r.detail || r.method) && <div className="small muted">{[r.method, r.detail].filter(Boolean).join(' · ')}</div>}
                     </td>
-                    <td className="small">{r.method ? <Pill status="neutral" label={r.method} /> : <span className="muted">—</span>}</td>
                     <td className="r strong">{r.debit > 0 ? <Money value={r.debit} /> : <span className="muted">—</span>}</td>
                     <td className="r strong">
                       {r.credit > 0 ? <span className="money pos">{money(r.credit)}</span>
@@ -101,16 +121,20 @@ function FullStatement({ data, onBill }) {
                           : r.struck ? <span className="muted small" style={{ textDecoration: 'line-through' }}>{money(r.originalAmount)}</span>
                             : <span className="muted">—</span>}
                     </td>
-                    <td className="r strong">{!r.isPart && <span className="money" style={{ color: r.balance > 0 ? 'var(--danger)' : 'var(--success)' }}>{money(r.balance)}</span>}</td>
+                    <td className="r strong">{!r.isPart && <span className="money" style={{ color: r.balance > 0.004 ? 'var(--danger)' : 'var(--success)' }}>{drcr(r.balance)}</span>}</td>
                   </tr>
                 ))}
               </tbody>
               <tfoot>
-                <tr>
-                  <td colSpan={3}>Closing balance{closing < -0.004 && ' (in your favour)'}</td>
-                  <td className="r">{money(r2(ledger.reduce((s, r) => s + r.debit, 0)))}</td>
-                  <td className="r">{money(r2(ledger.reduce((s, r) => s + r.credit, 0)))}</td>
-                  <td className="r" style={{ fontSize: 14 }}>{money(closing)}</td>
+                <tr className="ledger-total">
+                  <td colSpan={2}>Total</td>
+                  <td className="r">{money(totalDebit)}</td>
+                  <td className="r">{money(totalCredit)}</td>
+                  <td />
+                </tr>
+                <tr className="ledger-close">
+                  <td colSpan={4}>Closing balance{closing < -0.004 && ' (in your favour)'}</td>
+                  <td className="r">{drcr(closing)}</td>
                 </tr>
               </tfoot>
             </table>
@@ -135,7 +159,7 @@ function FullStatement({ data, onBill }) {
                   {r.method && <Pill status="neutral" label={r.method} />}
                   <span className="spacer" />
                   {r.parts && <span className="small" style={{ fontWeight: 600 }}>{openGroups[r.id] ? 'Hide parts' : `${r.parts.length} parts`}</span>}
-                  {!r.isPart && <span style={{ fontWeight: 700 }}>Bal {money(r.balance)}</span>}
+                  {!r.isPart && <span style={{ fontWeight: 700 }}>Bal {drcr(r.balance)}</span>}
                 </div>
               </div>
             ))}
@@ -357,8 +381,8 @@ function WarehouseStatement({ data }) {
           <div className="card-head"><h2 className="h2">Your Khata</h2></div>
           {rows.length ? (
             <>
-              <div className="table-wrap hide-mobile">
-                <table className="tbl">
+              <div className="table-wrap hide-mobile ledger-print-show">
+                <table className="tbl ledger-book">
                   <thead><tr><th style={{ width: 96 }}>Date</th><th>Details</th><th className="r">You gave</th><th className="r">You got</th><th className="r">Balance</th></tr></thead>
                   <tbody>
                     {rows.map((r) => (
@@ -467,7 +491,7 @@ export default function SharedLedger() {
           <h1 className="h1">Your Ledger</h1>
           <p className="muted small" style={{ margin: '5px 0 0' }}>Enter the password you were given to view your account.</p>
         </div>
-        <Field label="Password" error={err}><Input type="password" value={pw} autoFocus onChange={(e) => setPw(e.target.value)} placeholder="Enter password" /></Field>
+        <Field label="Password" error={err}><PasswordInput value={pw} autoFocus onChange={(e) => setPw(e.target.value)} placeholder="Enter password" /></Field>
         <Button type="submit" variant="primary" size="lg" block loading={busy} disabled={!pw}>View Ledger</Button>
         <div style={{ marginTop: 16, fontSize: 11.5, color: 'var(--text-muted)', textAlign: 'center' }}>This is a read-only view of your own account only.</div>
       </form>

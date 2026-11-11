@@ -207,7 +207,7 @@ var BOOLEAN = { reversed: 1, restock: 1, active: 1, isAdvance: 1 };
  * was not updated (Deploy > Manage deployments > edit > New version > Deploy).
  * Keep in step with package.json.
  */
-var BACKEND_VERSION = '2.7.14';
+var BACKEND_VERSION = '2.7.20';
 
 function doGet(e) {
   return json({ ok: true, data: { status: 'SGA Balloon Merchant backend is running', version: BACKEND_VERSION } });
@@ -232,7 +232,7 @@ var REPLAY_GUARDED = {
   saveCheque: 1, settleParty: 1,
   savePurchaseBill: 1, addSupplierPayment: 1, addSupplierReturn: 1, saveSupplier: 1,
   setOffParty: 1,
-  saveWarehouse: 1, saveWhMove: 1, saveWhExpense: 1,
+  saveWarehouse: 1, saveWhMove: 1, updateWhMove: 1, saveWhExpense: 1,
   saveStockCount: 1, importBatch: 1, saveUser: 1,
   saveWhParty: 1, addWhPartyPayment: 1, deliverFromWarehouse: 1, saveJournal: 1, addJournalPayment: 1
 };
@@ -448,6 +448,8 @@ function dispatch(action, p, token) {
     case 'archiveWarehouse': return toggleArchive('Warehouses', p.id, 'warehouse');
     case 'saveWhMove':       return saveWhMove(p);
     case 'voidWhMove':       return voidWhMove(p);
+    case 'updateWhMove':     return updateWhMove(p);
+    case 'deleteWhMove':     return deleteWhMove(p);
     case 'saveWhExpense':    return saveWhExpense(p);
     case 'deleteWhExpense':  return deleteWhExpense(p);
     case 'saveStockCount':   return saveStockCount(p);
@@ -520,7 +522,7 @@ var ACTION_PAGES = {
   saveJournal: ['parties', 'suppliers', 'whParties'], deleteJournal: ['parties', 'suppliers', 'whParties'],
   addJournalPayment: ['parties', 'suppliers', 'whParties'], deleteJournalPayment: ['parties', 'suppliers', 'whParties'],
   saveWarehouse: ['warehouses'], archiveWarehouse: ['warehouses'],
-  saveWhMove: ['whMoves'], voidWhMove: ['whMoves'], saveStockCount: ['whCount'],
+  saveWhMove: ['whMoves'], voidWhMove: ['whMoves'], updateWhMove: ['whMoves'], deleteWhMove: ['whMoves'], saveStockCount: ['whCount'],
   saveWhExpense: ['whExpenses'], deleteWhExpense: ['whExpenses'],
   // A party can be added straight from the stock in / out form.
   saveWhParty: ['whParties', 'whMoves'], archiveWhParty: ['whParties'], setWhPartyLock: ['whParties'],
@@ -537,7 +539,7 @@ var MONEY_ACTIONS = {
 };
 var ALWAYS_ALLOWED = { bootstrap: 1, changePassword: 1, logout: 1 };
 var SUPER_ONLY = { listUsers: 1, saveUser: 1, deleteUser: 1, importBatch: 1 };
-var ADMIN_ONLY = { fullBackup: 1, syncPush: 1, deleteBill: 1, deleteItem: 1 };
+var ADMIN_ONLY = { fullBackup: 1, syncPush: 1, deleteBill: 1, deleteItem: 1, deleteWhMove: 1 };
 
 function normRole(r) {
   r = String(r || '').toLowerCase().replace(/[\s_-]/g, '');
@@ -4685,6 +4687,148 @@ function voidWhMove(p) {
     logActivity('warehouse', move.id, 'void',
       'Cancelled ' + (meta.label || 'movement') + ' ' + move.docNo + (p.reason ? ' — ' + p.reason : ''), move, patch);
     return getById('WarehouseMoves', move.id);
+  });
+}
+
+/**
+ * What a movement does to stock: { wh: {"warehouseId|itemId": qty}, shop: {itemId: qty} }.
+ * A cancelled movement does nothing. Mirror of moveFlows() in src/lib/calc.js.
+ */
+function moveFlows(move, lines) {
+  var out = { wh: {}, shop: {} };
+  if (!move || move.status === 'voided') return out;
+  function add(o, k, v) { o[k] = r2((o[k] || 0) + v); }
+  (lines || []).forEach(function (l) {
+    var q = Number(l.qty) || 0;
+    if (move.type === 'transfer') {
+      add(out.wh, move.warehouseId + '|' + l.itemId, -q);
+      add(out.wh, move.toWarehouseId + '|' + l.itemId, q);
+    } else {
+      add(out.wh, move.warehouseId + '|' + l.itemId, ((MOVE_TYPES[move.type] || {}).sign || 0) * q);
+    }
+    if (move.type === 'to-shop') add(out.shop, l.itemId, q);
+    if (move.type === 'from-shop') add(out.shop, l.itemId, -q);
+  });
+  return out;
+}
+
+/**
+ * Refuse an edit or delete of a movement that would leave a warehouse, or the
+ * shop, below zero: goods it brought in may already have moved on.
+ * Mirror of assertMoveChange() in src/lib/localAdapter.js.
+ */
+function assertMoveChange(before, after, verb) {
+  function itemName(id) { var it = getById('Items', id); return it ? it.name : 'Item'; }
+  var whKeys = {};
+  Object.keys(before.wh).concat(Object.keys(after.wh)).forEach(function (k) { whKeys[k] = true; });
+  var stocks = {};
+  for (var k in whKeys) {
+    var delta = r2((after.wh[k] || 0) - (before.wh[k] || 0));
+    if (delta >= -0.0001) continue;
+    var parts = k.split('|');
+    if (!stocks[parts[0]]) stocks[parts[0]] = warehouseStock(parts[0]);
+    var have = stocks[parts[0]][parts[1]] || 0;
+    if (have + delta < -0.0001) {
+      var wh = getById('Warehouses', parts[0]);
+      fail(itemName(parts[1]) + ': only ' + have + ' in ' + (wh ? wh.name : 'the warehouse') +
+        ', so this movement cannot be ' + verb + ' — some of those goods have already moved on.');
+    }
+  }
+  var shopKeys = {};
+  Object.keys(before.shop).concat(Object.keys(after.shop)).forEach(function (k2) { shopKeys[k2] = true; });
+  for (var itemId in shopKeys) {
+    var d = r2((after.shop[itemId] || 0) - (before.shop[itemId] || 0));
+    if (d >= -0.0001) continue;
+    var shopHave = shopStockOf(itemId);
+    if (shopHave + d < -0.0001) {
+      fail(itemName(itemId) + ': only ' + shopHave + ' in the shop, so this movement cannot be ' + verb +
+        ' — the goods have already been used.');
+    }
+  }
+}
+
+/**
+ * Correct a saved movement in place: same document number and type, new
+ * details and lines. Refused if it would take stock below zero anywhere.
+ */
+function updateWhMove(p) {
+  return withLock(function () {
+    var move = getById('WarehouseMoves', p.id);
+    if (!move) fail('Movement not found');
+    if (move.status === 'voided') fail('This movement is cancelled and cannot be edited');
+    var meta = MOVE_TYPES[move.type] || {};
+    var wh = getById('Warehouses', p.warehouseId);
+    if (!wh) fail('Select a warehouse');
+    if (wh.id !== move.warehouseId && wh.status === 'archived') fail('Warehouse "' + wh.name + '" is archived. Restore it first.');
+    var dest = null;
+    if (move.type === 'transfer') {
+      dest = getById('Warehouses', p.toWarehouseId);
+      if (!dest) fail('Select the warehouse the goods are going to');
+      if (dest.id === wh.id) fail('A transfer needs two different warehouses');
+      if (dest.id !== move.toWarehouseId && dest.status === 'archived') fail('Warehouse "' + dest.name + '" is archived. Restore it first.');
+    }
+    var lines = (p.lines || []).filter(function (l) { return l.itemId; });
+    if (!lines.length) fail('Add at least one item');
+    var itemById = {};
+    readAll('Items').forEach(function (it) { itemById[it.id] = it; });
+    lines.forEach(function (l, i) {
+      if (!itemById[l.itemId]) fail('Line ' + (i + 1) + ': item not found');
+      if (!(Number(l.qty) > 0)) fail('Line ' + (i + 1) + ': quantity must be greater than zero');
+      if (l.rate !== undefined && l.rate !== '' && !(Number(l.rate) >= 0)) fail('Line ' + (i + 1) + ': rate must be zero or more');
+    });
+    var party = null;
+    if (p.partyId) {
+      if (move.type !== 'in' && move.type !== 'out') fail('Only stock in and stock out have a party');
+      party = getById('WhParties', p.partyId);
+      if (!party) fail('Party not found');
+      if (party.id !== move.partyId && party.status === 'archived') fail('Party "' + party.name + '" is archived. Restore it first.');
+    }
+    var oldLines = readAll('WarehouseMoveLines').filter(function (l) { return l.moveId === move.id; });
+    var takesRates = !CURRENT || CURRENT.seesCost;
+    var newLines = lines.map(function (l) {
+      var old = null;
+      oldLines.forEach(function (x) { if (l.id && x.id === l.id) old = x; });
+      var rate = !takesRates
+        ? (old ? old.rate : '')
+        : (l.rate === '' || l.rate === undefined || l.rate === null ? '' : r2(l.rate));
+      return {
+        id: old ? old.id : uid('wml'), moveId: move.id, itemId: l.itemId, qty: r2(l.qty),
+        unit: l.unit || itemById[l.itemId].baseUnit || 'Piece', rate: rate, note: l.note || ''
+      };
+    });
+    var patch = {
+      warehouseId: wh.id, toWarehouseId: dest ? dest.id : '', date: p.date || move.date,
+      partyName: party ? party.name : String(p.partyName || '').trim(), partyId: party ? party.id : '',
+      reference: String(p.reference || '').trim(), vehicleNo: String(p.vehicleNo || '').trim(),
+      driverName: String(p.driverName || '').trim(),
+      reason: p.reason !== undefined ? p.reason : move.reason, note: p.note || ''
+    };
+    var next = Object.assign({}, move, patch);
+    assertMoveChange(moveFlows(move, oldLines), moveFlows(next, newLines), 'changed');
+    updateRow('WarehouseMoves', move._row, patch);
+    deleteRowsWhere('WarehouseMoveLines', 'moveId', move.id);
+    newLines.forEach(function (l) { appendRow('WarehouseMoveLines', l); });
+    logActivity('warehouse', move.id, 'edit',
+      'Edited ' + (meta.label || 'movement') + ' ' + move.docNo + ' — ' + wh.name + ', ' +
+      newLines.length + ' item' + (newLines.length === 1 ? '' : 's'), move, patch);
+    return getById('WarehouseMoves', move.id);
+  });
+}
+
+/** Erase a movement and its lines for good (as against cancelling it, which keeps it on record). */
+function deleteWhMove(p) {
+  return withLock(function () {
+    var move = getById('WarehouseMoves', p.id);
+    if (!move) fail('Movement not found');
+    var lines = readAll('WarehouseMoveLines').filter(function (l) { return l.moveId === move.id; });
+    // A live movement being erased takes its effect with it; a cancelled one has none left.
+    assertMoveChange(moveFlows(move, lines), moveFlows(null, []), 'deleted');
+    deleteRowsWhere('WarehouseMoveLines', 'moveId', move.id);
+    deleteRowById('WarehouseMoves', move.id);
+    logActivity('warehouse', move.id, 'delete',
+      'Permanently deleted ' + ((MOVE_TYPES[move.type] || {}).label || 'movement') + ' ' + move.docNo +
+      (p.reason ? ' — ' + p.reason : ''), move, null);
+    return { ok: true };
   });
 }
 

@@ -6,7 +6,7 @@ import { CONFIG, PAYMENT_METHODS } from './config.js';
 import { r2, today, addDays, uid, phoneKey, nameKey, dayOf } from './format.js';
 import {
   billState, billTotals, isOpeningBill, payableNow, lineDelivered, lineReceived, supplierBalance,
-  MOVE_TYPES, warehouseStockMap, itemStock, journalClaims,
+  MOVE_TYPES, warehouseStockMap, itemStock, journalClaims, moveFlows,
 } from './calc.js';
 import { accessOf, stripCostData, COST_PAGES, PAGES } from './permissions.js';
 
@@ -1680,6 +1680,83 @@ async function perform(action, p = {}) {
       return move;
     }
 
+    /**
+     * Correct a saved movement in place: same document number and type, new
+     * details and lines. Refused if it would take stock below zero anywhere.
+     */
+    case 'updateWhMove': {
+      const move = db.whMoves.find((m) => m.id === p.id);
+      if (!move) throw new Error('Movement not found');
+      if (move.status === 'voided') throw new Error('This movement is cancelled and cannot be edited');
+      const meta = MOVE_TYPES[move.type] || {};
+      const wh = db.warehouses.find((w) => w.id === p.warehouseId);
+      if (!wh) throw new Error('Select a warehouse');
+      if (wh.id !== move.warehouseId && wh.status === 'archived') throw new Error(`Warehouse "${wh.name}" is archived. Restore it first.`);
+      let dest = null;
+      if (move.type === 'transfer') {
+        dest = db.warehouses.find((w) => w.id === p.toWarehouseId);
+        if (!dest) throw new Error('Select the warehouse the goods are going to');
+        if (dest.id === wh.id) throw new Error('A transfer needs two different warehouses');
+        if (dest.id !== move.toWarehouseId && dest.status === 'archived') throw new Error(`Warehouse "${dest.name}" is archived. Restore it first.`);
+      }
+      const lines = (p.lines || []).filter((l) => l.itemId);
+      if (!lines.length) throw new Error('Add at least one item');
+      lines.forEach((l, i) => {
+        if (!db.items.some((it) => it.id === l.itemId)) throw new Error(`Line ${i + 1}: item not found`);
+        if (!(Number(l.qty) > 0)) throw new Error(`Line ${i + 1}: quantity must be greater than zero`);
+        if (l.rate !== undefined && l.rate !== '' && !(Number(l.rate) >= 0)) throw new Error(`Line ${i + 1}: rate must be zero or more`);
+      });
+      let party = null;
+      if (p.partyId) {
+        if (move.type !== 'in' && move.type !== 'out') throw new Error('Only stock in and stock out have a party');
+        party = db.whParties.find((x) => x.id === p.partyId);
+        if (!party) throw new Error('Party not found');
+        if (party.id !== move.partyId && party.status === 'archived') throw new Error(`Party "${party.name}" is archived. Restore it first.`);
+      }
+      const oldLines = db.whMoveLines.filter((l) => l.moveId === move.id);
+      const takesRates = meOf(db)?.seesCost !== false;
+      const newLines = lines.map((l) => {
+        const item = db.items.find((it) => it.id === l.itemId);
+        const old = oldLines.find((x) => x.id === l.id);
+        // Someone who cannot see rates keeps the rates already on the line.
+        const rate = !takesRates ? (old?.rate ?? '') : (l.rate === '' || l.rate === undefined || l.rate === null ? '' : r2(l.rate));
+        return {
+          id: old ? old.id : uid('wml'), moveId: move.id, itemId: l.itemId, qty: r2(l.qty),
+          unit: l.unit || item?.baseUnit || 'Piece', rate, note: l.note || '',
+        };
+      });
+      const next = {
+        ...move,
+        warehouseId: wh.id, toWarehouseId: dest ? dest.id : '', date: p.date || move.date,
+        partyName: party ? party.name : String(p.partyName || '').trim(),
+        partyId: party ? party.id : '', reference: String(p.reference || '').trim(),
+        vehicleNo: String(p.vehicleNo || '').trim(), driverName: String(p.driverName || '').trim(),
+        reason: p.reason !== undefined ? p.reason : move.reason, note: p.note || '',
+      };
+      assertMoveChange(db, moveFlows(move, oldLines), moveFlows(next, newLines), 'changed');
+      const before = { ...move };
+      Object.assign(move, next);
+      db.whMoveLines = db.whMoveLines.filter((l) => l.moveId !== move.id).concat(newLines);
+      log(db, 'warehouse', move.id, 'edit', `Edited ${meta.label || 'movement'} ${move.docNo} — ${wh.name}, ${newLines.length} item${newLines.length === 1 ? '' : 's'}`, before, move);
+      save();
+      return move;
+    }
+
+    /** Erase a movement and its lines for good (as against cancelling it, which keeps it on record). */
+    case 'deleteWhMove': {
+      const i = db.whMoves.findIndex((m) => m.id === p.id);
+      if (i < 0) throw new Error('Movement not found');
+      const move = db.whMoves[i];
+      const lines = db.whMoveLines.filter((l) => l.moveId === move.id);
+      // A live movement being erased takes its effect with it; a cancelled one has none left.
+      assertMoveChange(db, moveFlows(move, lines), moveFlows(null, []), 'deleted');
+      db.whMoves.splice(i, 1);
+      db.whMoveLines = db.whMoveLines.filter((l) => l.moveId !== move.id);
+      log(db, 'warehouse', move.id, 'delete', `Permanently deleted ${MOVE_TYPES[move.type]?.label || 'movement'} ${move.docNo}${p.reason ? ` — ${p.reason}` : ''}`, move, null);
+      save();
+      return { ok: true };
+    }
+
     case 'saveWhExpense': {
       const wh = db.warehouses.find((w) => w.id === p.warehouseId);
       if (!wh) throw new Error('Select a warehouse');
@@ -2157,6 +2234,36 @@ function assertShopHas(db, lines, verb = 'send') {
       throw new Error(verb === 'cancel'
         ? `${item?.name || 'Item'}: only ${have} left in the shop, so this movement cannot be cancelled — the goods have already been used.`
         : `${item?.name || 'Item'}: only ${have} ${item?.baseUnit || ''} in the shop, cannot send ${q}.`.replace(/\s+,/, ','));
+    }
+  }
+}
+
+/**
+ * Refuse an edit or delete of a movement that would leave a warehouse, or the
+ * shop, with less than nothing: goods it brought in may already have moved on.
+ * `before` and `after` are moveFlows() of the movement as it was and as it will be.
+ */
+function assertMoveChange(db, before, after, verb) {
+  const item = (id) => db.items.find((i) => i.id === id)?.name || 'Item';
+  const stock = warehouseStockMap(db);
+  const keys = new Set([...Object.keys(before.wh), ...Object.keys(after.wh)]);
+  for (const k of keys) {
+    const delta = r2((after.wh[k] || 0) - (before.wh[k] || 0));
+    if (delta >= -0.0001) continue;
+    const [whId, itemId] = k.split('|');
+    const have = stock.get(whId)?.get(itemId) || 0;
+    if (have + delta < -0.0001) {
+      const wh = db.warehouses.find((w) => w.id === whId);
+      throw new Error(`${item(itemId)}: only ${have} in ${wh?.name || 'the warehouse'}, so this movement cannot be ${verb} — some of those goods have already moved on.`);
+    }
+  }
+  const shopKeys = new Set([...Object.keys(before.shop), ...Object.keys(after.shop)]);
+  for (const itemId of shopKeys) {
+    const delta = r2((after.shop[itemId] || 0) - (before.shop[itemId] || 0));
+    if (delta >= -0.0001) continue;
+    const have = itemStock(itemId, db);
+    if (have + delta < -0.0001) {
+      throw new Error(`${item(itemId)}: only ${have} in the shop, so this movement cannot be ${verb} — the goods have already been used.`);
     }
   }
 }

@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
-  ArrowDownToLine, ArrowLeft, ArrowUpFromLine, Ban, CircleCheck, ClipboardList, Download, Plus, Printer, Save, Tag,
+  ArrowDownToLine, ArrowLeft, ArrowUpFromLine, Ban, CircleCheck, ClipboardList, Download, Pencil, Plus, Printer, Save, Tag, Trash2,
 } from 'lucide-react';
 import { useApp } from '../lib/AppContext.jsx';
 import { api } from '../lib/api.js';
 import {
-  money, r2, fmtDate, fmtDateTime, norm, qty, rangeFor, inRange,
+  money, r2, fmtDate, fmtDateTime, norm, qty, rangeFor, inRange, dayOf,
 } from '../lib/format.js';
 import { MOVE_TYPES, moveEffect } from '../lib/calc.js';
 import { exportCSV, printReport, esc } from '../lib/exporters.js';
@@ -16,13 +16,22 @@ import {
 import { useSelectedWarehouse, WarehousePicker } from './WarehouseLayout.jsx';
 import ImportButton from '../components/ImportButton.jsx';
 
+/**
+ * A wholesale bill line sent from a warehouse takes stock out of it, but it is
+ * not a warehouse document. It is listed here beside them, as a "Wholesale sale".
+ */
+const SALE_META = { label: 'Wholesale Sale', tone: 'due', sign: -1 };
+const metaOf = (m) => (m.type === 'sale' ? SALE_META : MOVE_TYPES[m.type]);
+
 const TYPE_OPTIONS = [
   { value: 'all', label: 'All types' },
   ...Object.entries(MOVE_TYPES).map(([value, m]) => ({ value, label: m.label })),
+  { value: 'sale', label: SALE_META.label },
 ];
 
 /** Where a movement goes, in words: "Main → Branch", "→ Shop", "Ahmed Traders". */
 export function routeText(m, whName) {
+  if (m.type === 'sale') return `${whName(m.warehouseId)} → ${m.partyName || 'Customer'}`;
   if (m.type === 'transfer') return `${whName(m.warehouseId)} → ${whName(m.toWarehouseId)}`;
   if (m.type === 'to-shop') return `${whName(m.warehouseId)} → Shop`;
   if (m.type === 'from-shop') return `Shop → ${whName(m.warehouseId)}`;
@@ -42,6 +51,8 @@ export default function Moves() {
   const [custom, setCustom] = useState({ from: '', to: '' });
   const range = useMemo(() => rangeFor(preset, custom), [preset, custom]);
   const whName = (id) => (data.warehouses || []).find((w) => w.id === id)?.name || 'Warehouse';
+  // A wholesale sale opens its bill; every other row opens its warehouse document.
+  const open = (m) => navigate(m.type === 'sale' ? `/bill/${m.billId}` : `/warehouse/move/${m.id}`);
   const rows = useMemo(() => {
     const s = norm(q);
     const lines = new Map();
@@ -50,13 +61,33 @@ export default function Moves() {
       lines.get(l.moveId).push(l);
     });
     const itemName = (id) => data.items.find((i) => i.id === id)?.name || '';
-    return (data.whMoves || [])
+    // Wholesale bill lines sent from a warehouse, one row per bill and warehouse.
+    const sales = new Map();
+    const billById = new Map((data.bills || []).map((b) => [b.id, b]));
+    (data.billItems || []).forEach((l) => {
+      const b = billById.get(l.billId);
+      if (!l.warehouseId || !b) return;
+      const key = `${b.id}|${l.warehouseId}`;
+      if (!sales.has(key)) {
+        sales.set(key, {
+          id: `sale-${key}`, billId: b.id, type: 'sale', docNo: b.billNo, date: dayOf(b.date), warehouseId: l.warehouseId,
+          status: b.status === 'voided' ? 'voided' : 'active', createdAt: b.createdAt || b.date || '',
+          partyName: (data.parties || []).find((p) => p.id === b.partyId)?.name || '', reference: '', lines: [],
+        });
+      }
+      sales.get(key).lines.push({ ...l, rate: l.price });
+    });
+    const allMoves = [
+      ...(data.whMoves || []).map((m) => ({ ...m, lines: lines.get(m.id) || [] })),
+      ...sales.values(),
+    ];
+    return allMoves
       .filter((m) => showCancelled || m.status !== 'voided')
       .filter((m) => !selected || m.warehouseId === selected || m.toWarehouseId === selected)
       .filter((m) => type === 'all' || m.type === type)
       .filter((m) => inRange(m.date, range.from, range.to))
       .map((m) => {
-        const ls = lines.get(m.id) || [];
+        const ls = m.lines;
         const value = r2(ls.reduce((t, l) => t + (Number(l.qty) || 0) * (l.rate === '' || l.rate == null ? Number(data.items.find((i) => i.id === l.itemId)?.costPrice) || 0 : Number(l.rate) || 0), 0));
         return { ...m, lines: ls, units: r2(ls.reduce((t, l) => t + (Number(l.qty) || 0), 0)), value, route: routeText(m, whName), items: ls.map((l) => itemName(l.itemId)).join(', ') };
       })
@@ -71,7 +102,7 @@ export default function Moves() {
       const ids = selected ? [selected] : [m.warehouseId, m.toWarehouseId].filter(Boolean);
       if (m.type === 'transfer' && !selected) return;
       ids.forEach((wid) => {
-        const sign = moveEffect(m, wid);
+        const sign = m.type === 'sale' ? (m.warehouseId === wid ? -1 : 0) : moveEffect(m, wid);
         if (sign > 0) inQ += m.units;
         if (sign < 0) outQ += m.units;
       });
@@ -82,7 +113,7 @@ export default function Moves() {
     const out = [];
     rows.forEach((m) => m.lines.forEach((l) => {
       const it = data.items.find((i) => i.id === l.itemId);
-      out.push([m.docNo, fmtDate(m.date), MOVE_TYPES[m.type]?.label, m.route, it?.name || '', l.qty, l.unit, l.rate ?? '', m.reference, m.vehicleNo, m.status === 'voided' ? 'Cancelled' : 'Active']);
+      out.push([m.docNo, fmtDate(m.date), metaOf(m)?.label, m.route, it?.name || '', l.qty, l.unit, l.rate ?? '', m.reference, m.vehicleNo, m.status === 'voided' ? 'Cancelled' : 'Active']);
     }));
     exportCSV('WarehouseMovements', ['Doc No', 'Date', 'Type', 'Route', 'Item', 'Qty', 'Unit', 'Rate', 'Reference', 'Vehicle', 'Status'], out,
       [`${settings.shopName} — Warehouse Movements`, selected ? whName(selected) : 'All warehouses']);
@@ -119,13 +150,13 @@ export default function Moves() {
                 <thead><tr><th>Document</th><th>Date</th><th>Type</th><th>Route</th><th>Items</th><th className="r">Qty</th><th className="r cost-only">Value</th></tr></thead>
                 <tbody>
                   {rows.map((m) => (
-                    <tr key={m.id} className="clickable" onClick={() => navigate(`/warehouse/move/${m.id}`)} style={m.status === 'voided' ? { opacity: 0.55 } : undefined}>
+                    <tr key={m.id} className="clickable" onClick={() => open(m)} style={m.status === 'voided' ? { opacity: 0.55 } : undefined}>
                       <td style={{ fontWeight: 600, textDecoration: m.status === 'voided' ? 'line-through' : 'none' }}>
                         {m.docNo}
                         {m.reference && <div className="small muted" style={{ fontWeight: 400 }}>Ref {m.reference}</div>}
                       </td>
                       <td className="nowrap">{fmtDate(m.date)}</td>
-                      <td>{m.status === 'voided' ? <Pill status="voided" label="Cancelled" /> : <Pill status={MOVE_TYPES[m.type]?.tone} label={MOVE_TYPES[m.type]?.label} />}</td>
+                      <td>{m.status === 'voided' ? <Pill status="voided" label="Cancelled" /> : <Pill status={metaOf(m)?.tone} label={metaOf(m)?.label} />}</td>
                       <td className="small">{m.route}</td>
                       <td className="small muted" style={{ maxWidth: 260 }}>{m.items}</td>
                       <td className="r strong num">{qty(m.units)}</td>
@@ -138,11 +169,11 @@ export default function Moves() {
             </div>
             <div className="mcards" style={{ padding: 12 }}>
               {rows.map((m) => (
-                <div key={m.id} className="mcard" onClick={() => navigate(`/warehouse/move/${m.id}`)} style={m.status === 'voided' ? { opacity: 0.55 } : undefined}>
+                <div key={m.id} className="mcard" onClick={() => open(m)} style={m.status === 'voided' ? { opacity: 0.55 } : undefined}>
                   <div className="top"><span className="name">{m.docNo}</span><span className="amt num">{qty(m.units)}</span></div>
                   <div className="small muted">{m.route}</div>
                   <div className="meta">
-                    {m.status === 'voided' ? <Pill status="voided" label="Cancelled" /> : <Pill status={MOVE_TYPES[m.type]?.tone} label={MOVE_TYPES[m.type]?.label} />}
+                    {m.status === 'voided' ? <Pill status="voided" label="Cancelled" /> : <Pill status={metaOf(m)?.tone} label={metaOf(m)?.label} />}
                     <span>{fmtDate(m.date)}</span><span>{m.lines.length} item{m.lines.length === 1 ? '' : 's'}</span>
                   </div>
                 </div>
@@ -230,6 +261,8 @@ export function MoveView() {
   const sc = access.seesCost;
   const canMove = access.can('whMoves');
   const [voiding, setVoiding] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [delBusy, setDelBusy] = useState(false);
   const [rating, setRating] = useState(false);
   const [reason, setReason] = useState('');
   const move = (data.whMoves || []).find((m) => m.id === id);
@@ -278,6 +311,16 @@ export function MoveView() {
       footerHtml: sign,
     });
   };
+  const doDelete = async () => {
+    if (delBusy) return;
+    setDelBusy(true);
+    try {
+      await mutate(() => api.deleteWhMove(move.id, reason), `${move.docNo} deleted`);
+      navigate('/warehouse/moves', { replace: true });
+    } catch { /* toasted */ } finally {
+      setDelBusy(false);
+    }
+  };
   const doVoid = async () => {
     setVoiding(false);
     await mutate(() => api.voidWhMove(move.id, reason), `${move.docNo} cancelled`).catch(() => {});
@@ -290,7 +333,9 @@ export function MoveView() {
           : whParty && <Button icon={ArrowLeft} onClick={() => navigate(`/warehouse/party/${whParty.id}`)}>{whParty.name}</Button>}
         <Button icon={Printer} variant={justSaved ? 'primary' : ''} onClick={print}>Print {move.type === 'out' ? 'Gate Pass' : move.type === 'in' ? 'GRN' : 'Document'}</Button>
         {sc && !cancelled && <Button icon={Tag} onClick={() => setRating(true)}>Set rates</Button>}
+        {canMove && !cancelled && <Button icon={Pencil} onClick={() => navigate(`/warehouse/edit/${move.id}`)}>Edit</Button>}
         {canMove && !cancelled && <Button icon={Ban} onClick={() => setVoiding(true)}>Cancel</Button>}
+        {canMove && access.isAdmin && <Button variant="danger" icon={Trash2} onClick={() => setDeleting(true)}>Delete</Button>}
       </PageHead>
       {justSaved && (
         <div style={{ padding: '12px 14px', background: 'var(--success-bg)', border: '1px solid #BBF7D0', borderRadius: 'var(--r)', marginBottom: 16, display: 'flex', gap: 9, alignItems: 'center', color: '#15803D' }}>
@@ -366,6 +411,19 @@ export function MoveView() {
         </div>
       </div>
       {sc && <SetRatesModal open={rating} onClose={() => setRating(false)} move={move} lines={lines} />}
+      <Modal
+        open={deleting}
+        title={`Delete ${move.docNo} permanently?`}
+        onClose={() => setDeleting(false)}
+        footer={<><Button onClick={() => setDeleting(false)}>Keep it</Button><Button variant="danger" icon={Trash2} onClick={doDelete} loading={delBusy}>Delete permanently</Button></>}
+      >
+        <p className="small">
+          This erases the movement and its items for good — it will not stay in history.
+          {cancelled ? ' It is already cancelled, so stock does not change.' : ` Its effect on stock is undone: ${meta.sign > 0 || move.type === 'transfer' ? 'goods that came in go back out' : 'goods that went out come back in'}${move.type === 'to-shop' ? ', and the shop stock goes down again' : move.type === 'from-shop' ? ', and the shop stock goes up again' : ''}.`}
+          {move.partyName ? ` ${move.partyName}'s khata changes too.` : ''} If you only made a mistake in the entry, use Edit instead.
+        </p>
+        <Field label="Reason (optional)"><Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. entered by mistake" autoFocus /></Field>
+      </Modal>
       <Modal
         open={voiding}
         title={`Cancel ${move.docNo}?`}

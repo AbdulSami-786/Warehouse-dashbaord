@@ -235,7 +235,7 @@ export async function billPDF({ bill, lines, party, payments, settings, state, d
     y += name.length * 4.2;
     font(9);
     grey();
-    doc.text(`${q} ${l.unit || ''} x ${n2(price)}`.trim(), L + 4, y);
+    doc.text(`${q} ${l.unit || ''}${l.pack ? ` (= ${l.pack})` : ''} x ${n2(price)}`.trim(), L + 4, y);
     font(9, 'bold');
     ink();
     doc.text(n2(q * price), R, y, { align: 'right' });
@@ -306,7 +306,7 @@ export function printBill({ bill, lines, party, payments, settings, state, deliv
     <div class="li">
       <div class="nm">${i + 1}. ${esc(l.itemName)}</div>
       <div class="calc">
-        <span>${esc(l.qty)} ${esc(l.unit)} &times; ${money(l.price)}</span>
+        <span>${esc(l.qty)} ${esc(l.unit)}${l.pack ? ` (= ${esc(l.pack)})` : ''} &times; ${money(l.price)}</span>
         <span>${money(l.qty * l.price)}</span>
       </div>
       ${partial && l.delivered !== undefined && l.delivered < l.qty - 0.0001

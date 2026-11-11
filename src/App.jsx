@@ -157,6 +157,7 @@ function AppRoutes() {
         <Route path="list" element={W('warehouses', <Warehouses />)} />
         <Route path="w/:id" element={W('warehouses', <WarehouseDetail />)} />
         <Route path="new/:kind" element={W('whMoves', <MoveForm />)} />
+        <Route path="edit/:id" element={W('whMoves', <MoveForm />)} />
         <Route path="moves" element={W('whMoves', <Moves />)} />
         <Route path="move/:id" element={W(['whMoves', 'whParties'], <MoveView />)} />
         <Route path="parties" element={W('whParties', <WhParties />)} />

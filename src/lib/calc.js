@@ -35,6 +35,21 @@ export function unitFactor(item, unit) {
   return item?.altUnit && unit === item.altUnit && rate > 0 ? rate : 1;
 }
 
+/**
+ * The same quantity in the item's other unit, for showing on a bill:
+ * 15,600 Piece on an item packed 24 to a Packet gives "650 Packet", and
+ * 5 Packet gives "120 Piece". Empty when the item has no packing set up.
+ */
+export function packEquiv(item, qtyValue, unit) {
+  const rate = Number(item?.conversionRate);
+  const n = Number(qtyValue);
+  if (!item?.altUnit || !(rate > 0) || !(n > 0)) return '';
+  const fmt = (v) => String(+r2(v).toFixed(2)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  if (unit === item.altUnit) return `${fmt(n * rate)} ${item.baseUnit}`;
+  if (unit === item.baseUnit) return `${fmt(n / rate)} ${item.altUnit}`;
+  return '';
+}
+
 export function billReturned(billId, returns = []) {
   return r2(returns.filter((r) => r.billId === billId).reduce((s, r) => s + (Number(r.valueAdjusted) || 0), 0));
 }
@@ -1210,6 +1225,30 @@ export function moveEffect(move, warehouseId) {
   }
   if (move.warehouseId !== warehouseId) return 0;
   return MOVE_TYPES[move.type]?.sign || 0;
+}
+
+/**
+ * What a movement does to stock, as signed quantities: `wh` keyed "warehouseId|itemId"
+ * and `shop` keyed by itemId. A cancelled movement does nothing. Used to check that
+ * editing or deleting a movement never leaves a warehouse (or the shop) below zero.
+ */
+export function moveFlows(move, lines = []) {
+  const wh = {};
+  const shop = {};
+  if (!move || move.status === 'voided') return { wh, shop };
+  const add = (o, k, v) => { o[k] = r2((o[k] || 0) + v); };
+  lines.forEach((l) => {
+    const q = Number(l.qty) || 0;
+    if (move.type === 'transfer') {
+      add(wh, `${move.warehouseId}|${l.itemId}`, -q);
+      add(wh, `${move.toWarehouseId}|${l.itemId}`, q);
+    } else {
+      add(wh, `${move.warehouseId}|${l.itemId}`, (MOVE_TYPES[move.type]?.sign || 0) * q);
+    }
+    if (move.type === 'to-shop') add(shop, l.itemId, q);
+    if (move.type === 'from-shop') add(shop, l.itemId, -q);
+  });
+  return { wh, shop };
 }
 
 /**

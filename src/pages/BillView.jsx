@@ -7,7 +7,7 @@ import { useApp } from '../lib/AppContext.jsx';
 import { api } from '../lib/api.js';
 import { money, r2, fmtDate, fmtDateTime, qtySummary, whatsappUrl } from '../lib/format.js';
 import {
-  billStates, deliveryProgress, isOpeningBill, lineDelivered, warehouseStockMap,
+  billStates, deliveryProgress, isOpeningBill, lineDelivered, packEquiv, warehouseStockMap,
 } from '../lib/calc.js';
 import { billPDF, printBill } from '../lib/exporters.js';
 import {
@@ -50,7 +50,10 @@ export default function BillView() {
   const state = useMemo(() => (bill ? billStates(data.bills.filter((b) => b.partyId === bill.partyId), data).find((b) => b.id === bill.id) : null), [bill, data]);
   const party = bill ? data.parties.find((p) => p.id === bill.partyId) : null;
   const lines = useMemo(() => (bill ? data.billItems.filter((l) => l.billId === bill.id).map((l) => ({
-    ...l, itemName: data.items.find((i) => i.id === l.itemId)?.name || 'Item', delivered: lineDelivered(l, bill),
+    ...l,
+    itemName: data.items.find((i) => i.id === l.itemId)?.name || 'Item',
+    pack: packEquiv(data.items.find((i) => i.id === l.itemId), l.qty, l.unit),
+    delivered: lineDelivered(l, bill),
   })) : []), [bill, data.billItems, data.items]);
   const progress = useMemo(() => deliveryProgress(bill, data.billItems), [bill, data.billItems]);
   const warehouses = useMemo(() => (data.warehouses || []).filter((w) => w.status !== 'archived'), [data.warehouses]);
@@ -186,7 +189,10 @@ export default function BillView() {
                       <td className="muted">{i + 1}</td>
                       <td style={{ fontWeight: 500 }}>{l.itemName}</td>
                       <td className="r">{l.qty}</td>
-                      <td>{l.unit}</td>
+                      <td>
+                        {l.unit}
+                        {l.pack && <div className="small muted nowrap">= {l.pack}</div>}
+                      </td>
                       <td className="r"><Money value={l.price} /></td>
                       <td className="r strong"><Money value={l.qty * l.price} /></td>
                       {open && <td className="r nowrap"><ProgressCount done={l.delivered} qty={l.qty} /></td>}

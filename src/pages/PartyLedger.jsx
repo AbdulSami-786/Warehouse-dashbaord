@@ -9,7 +9,7 @@ import { api } from '../lib/api.js';
 import { money, r2, fmtDate, BUCKET_META, whatsappUrl } from '../lib/format.js';
 import {
   billStates, isOpeningBill, partyCredit, advanceAvailable, partyPendingCheques, reorderSuggestion, combinedPartyLedger,
-  ledgerFilterMatch, LEDGER_FILTERS, supplierForParty, supplierBalance, SYSTEM_METHODS, journalOwed, partName,
+  ledgerFilterMatch, LEDGER_FILTERS, supplierForParty, supplierBalance, SYSTEM_METHODS, journalOwed, partName, packEquiv,
 } from '../lib/calc.js';
 import { exportCSV, printReport, billPDF, raw, esc } from '../lib/exporters.js';
 import { canOpen, isLocked, relock } from '../lib/partyLock.js';
@@ -122,6 +122,7 @@ function PartyLedger({ onRelock }) {
   };
   const itemName = (iid) => data.items.find((i) => i.id === iid)?.name || 'Item';
   const linesOf = (bid) => data.billItems.filter((l) => l.billId === bid);
+  const packOf = (l) => packEquiv(data.items.find((i) => i.id === l.itemId), l.qty, l.unit);
   const netLabel = net > 0.004 ? `${party.name} owes you` : net < -0.004 ? `You owe ${party.name}` : 'Account is settled';
   const netMeta = supplier ? [`You owe them (purchases): ${money(owedToThem)}`, `Net: ${netLabel} ${money(Math.abs(net))}`] : [];
   const closing = ledger.length ? ledger[ledger.length - 1].balance : 0;
@@ -467,7 +468,10 @@ function PartyLedger({ onRelock }) {
                                           <td className="muted">{i + 1}</td>
                                           <td style={{ fontWeight: 500 }}>{itemName(l.itemId)}</td>
                                           <td className="r">{l.qty}</td>
-                                          <td>{l.unit}</td>
+                                          <td>
+                                            {l.unit}
+                                            {packOf(l) && <div className="small muted nowrap">= {packOf(l)}</div>}
+                                          </td>
                                           <td className="r"><Money value={l.price} /></td>
                                           <td className="r strong"><Money value={r2(l.qty * l.price)} /></td>
                                         </tr>
@@ -556,13 +560,14 @@ function PartyLedger({ onRelock }) {
         cheques={data.cheques}
         returns={previewId ? data.returns.filter((r) => r.billId === previewId) : []}
         itemName={itemName}
+        packOf={packOf}
         party={party}
         shopName={settings.shopName}
         onPrint={() => { const b = previewId; setPreviewId(null); navigate(`/bill/${b}`); }}
         onPDF={() => {
           if (!previewBill) return;
           billPDF({
-            bill: previewBill, lines: linesOf(previewBill.id).map((l) => ({ ...l, itemName: itemName(l.itemId) })), party,
+            bill: previewBill, lines: linesOf(previewBill.id).map((l) => ({ ...l, itemName: itemName(l.itemId), pack: packOf(l) })), party,
             payments: data.payments.filter((p) => p.billId === previewBill.id && !p.reversed), settings, state: previewBill,
           });
         }}

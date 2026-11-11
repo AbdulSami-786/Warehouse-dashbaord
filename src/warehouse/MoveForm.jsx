@@ -27,8 +27,11 @@ const KINDS = {
 
 const newLine = () => ({ key: uid('wl'), itemId: '', qty: '', unit: '', rate: '' });
 
+/** Which form a saved movement type is entered on. */
+const kindOfType = (t) => (t === 'to-shop' || t === 'from-shop' ? 'to-shop' : t.startsWith('adjust') ? 'adjust' : t);
+
 export default function MoveForm() {
-  const { kind = 'in' } = useParams();
+  const { kind: kindParam = 'in', id: editId } = useParams();
   const navigate = useNavigate();
   const [search] = useSearchParams();
   const {
@@ -36,9 +39,12 @@ export default function MoveForm() {
   } = useApp();
   const sc = access.seesCost;
   const selected = useSelectedWarehouse();
+  // /warehouse/edit/:id opens a saved movement for correcting; its type cannot change.
+  const editing = editId ? (data.whMoves || []).find((m) => m.id === editId) || null : null;
+  const kind = editing ? kindOfType(editing.type) : kindParam;
   const meta = KINDS[kind] || KINDS.in;
   const [direction, setDirection] = useState(kind === 'adjust' ? 'adjust-out' : 'to-shop');
-  const type = kind === 'to-shop' ? direction : kind === 'adjust' ? direction : kind;
+  const type = editing ? editing.type : kind === 'to-shop' ? direction : kind === 'adjust' ? direction : kind;
   const [warehouseId, setWarehouseId] = useState(selected || activeWarehouses[0]?.id || '');
   const [toWarehouseId, setToWarehouseId] = useState('');
   const [date, setDate] = useState(today());
@@ -58,6 +64,22 @@ export default function MoveForm() {
 
   // A fresh form whenever the kind of movement changes.
   useEffect(() => {
+    if (editing) {
+      setWarehouseId(editing.warehouseId);
+      setToWarehouseId(editing.toWarehouseId || '');
+      setDate(editing.date);
+      setPartyId(editing.partyId || '');
+      setReference(editing.reference || '');
+      setVehicleNo(editing.vehicleNo || '');
+      setDriverName(editing.driverName || '');
+      setReason(editing.reason || ADJUST_REASONS[0]);
+      setNote(editing.note || '');
+      setDirection(editing.type);
+      setLines((data.whMoveLines || []).filter((l) => l.moveId === editing.id).map((l) => ({
+        key: uid('wl'), id: l.id, itemId: l.itemId, qty: String(l.qty), unit: l.unit || '', rate: l.rate === '' || l.rate == null ? '' : String(l.rate),
+      })));
+      return;
+    }
     setLines([newLine()]);
     // Opened from a party's khata: that party is already chosen.
     const given = search.get('party');
@@ -65,7 +87,7 @@ export default function MoveForm() {
     setReference('');
     setNote('');
     setDirection(kind === 'adjust' ? 'adjust-out' : 'to-shop');
-  }, [kind]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [kind, editId]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!warehouseId && activeWarehouses[0]) setWarehouseId(selected || activeWarehouses[0].id);
   }, [activeWarehouses, warehouseId, selected]);
@@ -77,7 +99,23 @@ export default function MoveForm() {
   }, [focusKey]);
 
   const stockMap = useMemo(() => warehouseStockMap(data), [data]);
-  const have = (itemId) => stockMap.get(warehouseId)?.get(itemId) || 0;
+  // Editing a movement that took goods out gives those goods back before checking again.
+  const own = useMemo(() => {
+    const m = new Map();
+    if (editing && editing.status !== 'voided' && (MOVE_TYPES[editing.type]?.sign || 0) < 0 && editing.warehouseId === warehouseId) {
+      (data.whMoveLines || []).filter((l) => l.moveId === editing.id).forEach((l) => m.set(l.itemId, r2((m.get(l.itemId) || 0) + (Number(l.qty) || 0))));
+    }
+    return m;
+  }, [editing, data.whMoveLines, warehouseId]);
+  // Likewise a saved Shop → Warehouse movement gives its goods back to the shop.
+  const ownShop = useMemo(() => {
+    const m = new Map();
+    if (editing && editing.status !== 'voided' && editing.type === 'from-shop') {
+      (data.whMoveLines || []).filter((l) => l.moveId === editing.id).forEach((l) => m.set(l.itemId, r2((m.get(l.itemId) || 0) + (Number(l.qty) || 0))));
+    }
+    return m;
+  }, [editing, data.whMoveLines]);
+  const have = (itemId) => r2((stockMap.get(warehouseId)?.get(itemId) || 0) + (own.get(itemId) || 0));
   const outgoing = (MOVE_TYPES[type]?.sign || 0) < 0;
   const fromShop = type === 'from-shop';
   const withParty = kind === 'in' || kind === 'out';
@@ -121,7 +159,7 @@ export default function MoveForm() {
     return m;
   }, [ready]);
   const short = outgoing ? [...wanted.entries()].filter(([itemId, q]) => q > have(itemId) + 0.0001) : [];
-  const shopShort = fromShop ? [...wanted.entries()].filter(([itemId, q]) => q > itemStock(itemId, data) + 0.0001) : [];
+  const shopShort = fromShop ? [...wanted.entries()].filter(([itemId, q]) => q > itemStock(itemId, data) + (ownShop.get(itemId) || 0) + 0.0001) : [];
   const value = r2(ready.reduce((s, l) => s + baseQty(l) * (Number(l.rate) || Number(data.items.find((i) => i.id === l.itemId)?.costPrice) || 0), 0));
   const units = r2(ready.reduce((s, l) => s + baseQty(l), 0));
   // What goes on the party's khata: lines at the rates typed, never a fallback cost.
@@ -134,24 +172,33 @@ export default function MoveForm() {
     if (busy || !ok) return;
     setBusy(true);
     try {
-      const move = await mutate(() => api.saveWhMove({
+      const body = {
         type, warehouseId, toWarehouseId: needsDest ? toWarehouseId : '', date, partyId: party ? party.id : '', partyName: party ? party.name : '', reference, vehicleNo, driverName,
         reason: kind === 'adjust' ? reason : '', note,
         lines: ready.map((l) => {
           const it = data.items.find((i) => i.id === l.itemId);
           const converted = it && l.unit === it.altUnit && Number(it.conversionRate) > 0;
           return {
-            itemId: l.itemId, qty: baseQty(l), unit: it?.baseUnit || l.unit, rate: l.rate === '' ? '' : Number(l.rate),
+            id: l.id, itemId: l.itemId, qty: baseQty(l), unit: it?.baseUnit || l.unit, rate: l.rate === '' ? '' : Number(l.rate),
             note: converted ? `${l.qty} ${l.unit}` : '',
           };
         }),
-      }), `${MOVE_TYPES[type].label} saved`);
+      };
+      if (editing) {
+        await mutate(() => api.updateWhMove({ ...body, id: editing.id }), `${editing.docNo} updated`);
+        navigate(`/warehouse/move/${editing.id}`, { replace: true });
+        return;
+      }
+      const move = await mutate(() => api.saveWhMove(body), `${MOVE_TYPES[type].label} saved`);
       navigate(`/warehouse/move/${move.id}?saved=1`, { replace: true });
     } catch { /* toasted */ } finally {
       setBusy(false);
     }
   };
 
+  if (editId && (!editing || editing.status === 'voided')) {
+    return <Empty icon={Info} title={editing ? 'This movement is cancelled' : 'Movement not found'} message={editing ? 'A cancelled movement cannot be edited.' : 'It may have been deleted.'} action={<Button onClick={() => navigate('/warehouse/moves')}>Back to Movements</Button>} />;
+  }
   if (!activeWarehouses.length) {
     return (
       <>
@@ -171,19 +218,19 @@ export default function MoveForm() {
   const whLabel = type === 'transfer' ? 'From warehouse' : outgoing ? 'From warehouse' : 'Into warehouse';
   return (
     <>
-      <PageHead title={meta.title} subtitle={meta.sub}>
+      <PageHead title={editing ? `Edit ${editing.docNo}` : meta.title} subtitle={editing ? `${MOVE_TYPES[type]?.label} · fix a mistake — the document keeps its number` : meta.sub}>
         <Button onClick={() => navigate(-1)}>Cancel</Button>
-        <ImportButton kind="whMoves" defaultType={kind === 'adjust' ? 'adjust-out' : kind} />
-        <Button variant="primary" icon={Save} onClick={save} loading={busy} disabled={!ok}>Save {MOVE_TYPES[type]?.short}</Button>
+        {!editing && <ImportButton kind="whMoves" defaultType={kind === 'adjust' ? 'adjust-out' : kind} />}
+        <Button variant="primary" icon={Save} onClick={save} loading={busy} disabled={!ok}>{editing ? 'Save changes' : `Save ${MOVE_TYPES[type]?.short}`}</Button>
       </PageHead>
 
-      {kind === 'to-shop' && (
+      {kind === 'to-shop' && !editing && (
         <div className="seg mb-2">
           <button className={direction === 'to-shop' ? 'active' : ''} onClick={() => setDirection('to-shop')}>Warehouse → Shop</button>
           <button className={direction === 'from-shop' ? 'active' : ''} onClick={() => setDirection('from-shop')}>Shop → Warehouse</button>
         </div>
       )}
-      {kind === 'adjust' && (
+      {kind === 'adjust' && !editing && (
         <div className="seg mb-2">
           <button className={direction === 'adjust-out' ? 'active' : ''} onClick={() => setDirection('adjust-out')}>Reduce stock (−)</button>
           <button className={direction === 'adjust-in' ? 'active' : ''} onClick={() => setDirection('adjust-in')}>Add stock (+)</button>
@@ -362,7 +409,7 @@ export default function MoveForm() {
               </div>
             )}
           </Card>
-          <Button variant="primary" size="lg" block icon={Save} onClick={save} loading={busy} disabled={!ok}>Save {MOVE_TYPES[type]?.label}</Button>
+          <Button variant="primary" size="lg" block icon={Save} onClick={save} loading={busy} disabled={!ok}>{editing ? 'Save changes' : `Save ${MOVE_TYPES[type]?.label}`}</Button>
         </div>
       </div>
 

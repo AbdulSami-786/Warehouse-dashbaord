@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  Check, Info, Inbox, LoaderCircle, Plus, Search, TriangleAlert, X,
+  Check, Eye, EyeOff, Info, Inbox, LoaderCircle, Plus, Search, TriangleAlert, X,
 } from 'lucide-react';
 import { money, norm } from '../lib/format.js';
 
@@ -236,6 +236,28 @@ export function Input({ onWheel, onKeyDown, ...props }) {
       onKeyDown={keyDown}
       onWheel={onWheel}
     />
+  );
+}
+
+/** Password box with an eye button to show or hide what is typed. */
+export function PasswordInput(props) {
+  const [shown, setShown] = useState(false);
+  return (
+    <div style={{ position: 'relative' }}>
+      <Input {...props} type={shown ? 'text' : 'password'} style={{ ...props.style, paddingRight: 42 }} />
+      <button
+        type="button"
+        onClick={() => setShown((s) => !s)}
+        aria-label={shown ? 'Hide password' : 'Show password'}
+        title={shown ? 'Hide password' : 'Show password'}
+        style={{
+          position: 'absolute', right: 4, top: '50%', transform: 'translateY(-50%)', width: 34, height: 34,
+          display: 'grid', placeItems: 'center', border: 0, background: 'transparent', cursor: 'pointer', color: 'var(--text-muted)',
+        }}
+      >
+        {shown ? <EyeOff size={17} /> : <Eye size={17} />}
+      </button>
+    </div>
   );
 }
 
