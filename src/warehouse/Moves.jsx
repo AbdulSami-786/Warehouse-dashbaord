@@ -6,9 +6,9 @@ import {
 import { useApp } from '../lib/AppContext.jsx';
 import { api } from '../lib/api.js';
 import {
-  money, r2, fmtDate, fmtDateTime, norm, qty, rangeFor, inRange, dayOf,
+  money, r2, fmtDate, fmtDateTime, norm, qty, rangeFor, inRange,
 } from '../lib/format.js';
-import { MOVE_TYPES, moveEffect } from '../lib/calc.js';
+import { MOVE_TYPES, moveEffect, wholesaleSaleMoves } from '../lib/calc.js';
 import { exportCSV, printReport, esc } from '../lib/exporters.js';
 import {
   Button, Card, DateRange, Empty, Field, Input, Modal, Money, PageHead, Pill, SearchBox, Select, Stat,
@@ -61,25 +61,9 @@ export default function Moves() {
       lines.get(l.moveId).push(l);
     });
     const itemName = (id) => data.items.find((i) => i.id === id)?.name || '';
-    // Wholesale bill lines sent from a warehouse, one row per bill and warehouse.
-    const sales = new Map();
-    const billById = new Map((data.bills || []).map((b) => [b.id, b]));
-    (data.billItems || []).forEach((l) => {
-      const b = billById.get(l.billId);
-      if (!l.warehouseId || !b) return;
-      const key = `${b.id}|${l.warehouseId}`;
-      if (!sales.has(key)) {
-        sales.set(key, {
-          id: `sale-${key}`, billId: b.id, type: 'sale', docNo: b.billNo, date: dayOf(b.date), warehouseId: l.warehouseId,
-          status: b.status === 'voided' ? 'voided' : 'active', createdAt: b.createdAt || b.date || '',
-          partyName: (data.parties || []).find((p) => p.id === b.partyId)?.name || '', reference: '', lines: [],
-        });
-      }
-      sales.get(key).lines.push({ ...l, rate: l.price });
-    });
     const allMoves = [
       ...(data.whMoves || []).map((m) => ({ ...m, lines: lines.get(m.id) || [] })),
-      ...sales.values(),
+      ...wholesaleSaleMoves(data),
     ];
     return allMoves
       .filter((m) => showCancelled || m.status !== 'voided')

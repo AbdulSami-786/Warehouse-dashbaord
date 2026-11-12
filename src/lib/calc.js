@@ -791,8 +791,10 @@ function collapseGroups(rows) {
   const out = [];
   const seenInfo = new Set();
   for (const r of rows) {
-    if (r.groupKey && (r.paymentId || r.type === 'jpay') && !r.isAdvance) {
-      const k = `${r.groupKey}|${r.type === 'jpay' ? 'payment' : r.type}|${r.struck ? 1 : 0}|${r.date}`;
+    if (r.groupKey && (r.paymentId || r.type === 'jpay')) {
+      // The advance part of a receipt (the extra over what was owed) joins the same line.
+      const kind = r.type === 'jpay' || (r.isAdvance && r.type === 'advance') ? 'payment' : r.type;
+      const k = `${r.groupKey}|${kind}|${r.struck ? 1 : 0}|${r.date}`;
       if (!parts.has(k)) {
         parts.set(k, []);
         out.push({ __group: k });
@@ -811,7 +813,8 @@ function collapseGroups(rows) {
     if (!r.__group) return r;
     const g = parts.get(r.__group);
     if (g.length === 1) return g[0];
-    const first = g[0];
+    // Lead with a bill / journal part, so the line reads as a payment, not as an advance.
+    const first = g.find((x) => !x.isAdvance) || g[0];
     const total = r2(g.reduce((s, x) => s + (x.originalAmount || 0), 0));
     const split = g.map((x) => `${partName(x)}: ${rs(x.originalAmount)}`);
     const notes = [...new Set(g.map((x) => x.noteText).filter(Boolean))];
@@ -905,6 +908,7 @@ export function partyLedger(partyId, data = {}, from = null, to = null) {
         billNo: bill ? bill.billNo : '',
         chequeText: chq ? `Cheque ${chq.chequeNo || ''}${chq.bankName ? ' / ' + chq.bankName : ''}`.trimEnd() : '',
         noteText: p.note || '',
+        partLabel: p.isAdvance ? 'Advance' : undefined,
       });
     }
     if (p.reversed && within(p.reversedAt || p.date)) {
@@ -1283,6 +1287,30 @@ export function warehouseStockMap({
     if (l.warehouseId && !voided.has(l.billId)) bump(l.warehouseId, l.itemId, -(Number(l.qty) || 0));
   });
   return out;
+}
+
+/**
+ * Wholesale bill lines sent from a warehouse, as movement-like rows: one per
+ * bill and warehouse, typed 'sale'. They are not warehouse documents, but they
+ * take stock out of the warehouse, so movement lists show them beside the others.
+ */
+export function wholesaleSaleMoves({ bills = [], billItems = [], parties = [] } = {}) {
+  const sales = new Map();
+  const billById = new Map(bills.map((b) => [b.id, b]));
+  billItems.forEach((l) => {
+    const b = billById.get(l.billId);
+    if (!l.warehouseId || !b) return;
+    const key = `${b.id}|${l.warehouseId}`;
+    if (!sales.has(key)) {
+      sales.set(key, {
+        id: `sale-${key}`, billId: b.id, type: 'sale', docNo: b.billNo, date: dayOf(b.date), warehouseId: l.warehouseId,
+        status: b.status === 'voided' ? 'voided' : 'active', createdAt: b.createdAt || b.date || '',
+        partyName: parties.find((p) => p.id === b.partyId)?.name || '', reference: '', lines: [],
+      });
+    }
+    sales.get(key).lines.push({ ...l, rate: l.price });
+  });
+  return [...sales.values()];
 }
 
 export function warehouseItemStock(warehouseId, itemId, data) {

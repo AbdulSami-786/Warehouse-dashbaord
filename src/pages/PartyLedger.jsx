@@ -614,9 +614,14 @@ function PartyLedger({ onRelock }) {
           const g = delGroup;
           setDelGroup(null);
           await mutate(async () => {
-            for (const part of g.parts) {
+            // The advance part goes last: deleting an advance can reopen bills paid from it.
+            const ordered = [...g.parts].sort((a, b) => (a.isAdvance ? 1 : 0) - (b.isAdvance ? 1 : 0));
+            for (const part of ordered) {
               if (part.journalPaymentId) await api.deleteJournalPayment(part.journalPaymentId);
-              else if (part.paymentId) await api.deletePayment(part.paymentId);
+              else if (part.isAdvance) {
+                if (part.advanceId) await api.deleteAdvance(part.advanceId);
+                else if (part.paymentId) await api.deletePayment(part.paymentId, 'Orphaned advance receipt', true);
+              } else if (part.paymentId) await api.deletePayment(part.paymentId);
             }
           }, 'Payment deleted').catch(() => {});
         }}

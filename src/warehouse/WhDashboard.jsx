@@ -12,7 +12,7 @@ import {
   money, r2, fmtDate, isoDate, qty, today, rangeFor, inRange, daysSince,
 } from '../lib/format.js';
 import {
-  MOVE_TYPES, moveEffect, warehouseExpenseTotal, warehouseStockMap, whPartySummaries,
+  MOVE_TYPES, moveEffect, warehouseExpenseTotal, warehouseStockMap, whPartySummaries, wholesaleSaleMoves,
 } from '../lib/calc.js';
 import { stockEvents } from '../lib/reports.js';
 import {
@@ -66,8 +66,12 @@ export default function WhDashboard() {
   const allEvents = useMemo(() => stockEvents(data).filter((e) => scopeIds.has(e.location)), [data, scopeIds]);
   const monthEvents = useMemo(() => allEvents.filter((e) => inRange(e.date, month.from, month.to)), [allEvents, month.from, month.to]);
 
+  // Warehouse documents plus wholesale bills sent from a warehouse.
+  const sales = useMemo(() => wholesaleSaleMoves(data), [data]);
+  const allMoves = useMemo(() => [...(data.whMoves || []), ...sales], [data.whMoves, sales]);
+
   const kpi = useMemo(() => {
-    const todays = (data.whMoves || []).filter((m) => m.status !== 'voided' && m.date === day && (scopeIds.has(m.warehouseId) || scopeIds.has(m.toWarehouseId)));
+    const todays = allMoves.filter((m) => m.status !== 'voided' && m.date === day && (scopeIds.has(m.warehouseId) || scopeIds.has(m.toWarehouseId)));
     const expenses = r2(scoped.reduce((s, w) => s + warehouseExpenseTotal(data.whExpenses, w.id, month.from, month.to), 0));
     let skus = 0;
     let out = 0;
@@ -82,7 +86,7 @@ export default function WhDashboard() {
       monthIn: r2(monthEvents.reduce((s, e) => s + e.qtyIn, 0)),
       monthOut: r2(monthEvents.reduce((s, e) => s + e.qtyOut, 0)),
     };
-  }, [scoped, data, day, month.from, month.to, held, monthEvents, scopeIds]);
+  }, [scoped, data, allMoves, day, month.from, month.to, held, monthEvents, scopeIds]);
 
   // Low stock across the warehouses in scope, against each item's alert level.
   const low = useMemo(() => data.items
@@ -138,14 +142,14 @@ export default function WhDashboard() {
   }, [data.whExpenses, scopeIds, month.from, month.to]);
 
   const linesOf = (mid) => (data.whMoveLines || []).filter((l) => l.moveId === mid);
-  const recent = useMemo(() => (data.whMoves || [])
+  const recent = useMemo(() => allMoves
     .filter((m) => scopeIds.has(m.warehouseId) || scopeIds.has(m.toWarehouseId))
     .sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.createdAt).localeCompare(String(a.createdAt)))
     .slice(0, 8)
     .map((m) => {
-      const lines = linesOf(m.id);
+      const lines = m.type === 'sale' ? m.lines : linesOf(m.id);
       return { ...m, units: r2(lines.reduce((s, l) => s + (Number(l.qty) || 0), 0)), count: lines.length };
-    }), [data, scopeIds]); // eslint-disable-line react-hooks/exhaustive-deps
+    }), [data, allMoves, scopeIds]); // eslint-disable-line react-hooks/exhaustive-deps
   const todayMoves = recent.filter((m) => m.date === day && m.status !== 'voided');
 
   // Units in and out per day for the chosen number of days.
@@ -153,6 +157,11 @@ export default function WhDashboard() {
     const ids = scoped.map((w) => w.id);
     const moves = new Map((data.whMoves || []).filter((m) => m.status !== 'voided').map((m) => [m.id, m]));
     const byDay = new Map();
+    // Wholesale sales sent from a warehouse in view count as stock going out.
+    sales.filter((m) => m.status !== 'voided' && ids.includes(m.warehouseId)).forEach((m) => {
+      if (!byDay.has(m.date)) byDay.set(m.date, { in: 0, out: 0 });
+      byDay.get(m.date).out += m.lines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
+    });
     (data.whMoveLines || []).forEach((l) => {
       const m = moves.get(l.moveId);
       if (!m) return;
@@ -176,9 +185,9 @@ export default function WhDashboard() {
       out.push({ date: d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }), In: r2(v.in), Out: r2(v.out) });
     }
     return out;
-  }, [data, scoped, selected, days]);
+  }, [data, sales, scoped, selected, days]);
 
-  const monthMoves = (data.whMoves || []).filter((m) => m.status !== 'voided' && inRange(m.date, month.from, month.to)).length;
+  const monthMoves = allMoves.filter((m) => m.status !== 'voided' && inRange(m.date, month.from, month.to)).length;
 
   if (!activeWarehouses.length) {
     return (
@@ -279,12 +288,12 @@ export default function WhDashboard() {
           {todayMoves.length ? todayMoves.map((m) => {
             const incoming = MOVE_TYPES[m.type]?.sign > 0;
             return (
-              <div key={m.id} className="alert-row clickable" onClick={() => navigate(`/warehouse/move/${m.id}`)}>
+              <div key={m.id} className="alert-row clickable" onClick={() => navigate(m.type === 'sale' ? `/bill/${m.billId}` : `/warehouse/move/${m.id}`)}>
                 <span className={`ico ${m.type === 'transfer' ? 'info' : incoming ? 'success' : 'warning'}`}>
                   {m.type === 'transfer' ? <ArrowLeftRight size={15} /> : incoming ? <ArrowDownToLine size={15} /> : <ArrowUpFromLine size={15} />}
                 </span>
                 <div className="body">
-                  <div className="t">{m.docNo} · {MOVE_TYPES[m.type]?.label}</div>
+                  <div className="t">{m.docNo} · {m.type === 'sale' ? 'Wholesale Sale' : MOVE_TYPES[m.type]?.label}</div>
                   <div className="s">
                     {routeText(m, whName)} · {m.count} item{m.count === 1 ? '' : 's'}
                     {(m.vehicleNo || m.driverName) && <> · <Truck size={11} style={{ verticalAlign: -1 }} /> {[m.vehicleNo, m.driverName].filter(Boolean).join(' · ')}</>}
@@ -338,12 +347,12 @@ export default function WhDashboard() {
           {recent.length ? recent.map((m) => {
             const incoming = MOVE_TYPES[m.type]?.sign > 0;
             return (
-              <div key={m.id} className="alert-row clickable" onClick={() => navigate(`/warehouse/move/${m.id}`)} style={m.status === 'voided' ? { opacity: 0.55 } : undefined}>
+              <div key={m.id} className="alert-row clickable" onClick={() => navigate(m.type === 'sale' ? `/bill/${m.billId}` : `/warehouse/move/${m.id}`)} style={m.status === 'voided' ? { opacity: 0.55 } : undefined}>
                 <span className={`ico ${m.type === 'transfer' ? 'info' : incoming ? 'success' : 'warning'}`}>
                   {m.type === 'transfer' ? <ArrowLeftRight size={15} /> : incoming ? <ArrowDownToLine size={15} /> : <ArrowUpFromLine size={15} />}
                 </span>
                 <div className="body">
-                  <div className="t" style={{ textDecoration: m.status === 'voided' ? 'line-through' : 'none' }}>{m.docNo} · {MOVE_TYPES[m.type]?.label}</div>
+                  <div className="t" style={{ textDecoration: m.status === 'voided' ? 'line-through' : 'none' }}>{m.docNo} · {m.type === 'sale' ? 'Wholesale Sale' : MOVE_TYPES[m.type]?.label}</div>
                   <div className="s">{fmtDate(m.date)} · {routeText(m, whName)} · {m.count} item{m.count === 1 ? '' : 's'}</div>
                 </div>
                 <span className="num">{qty(m.units)}</span>
