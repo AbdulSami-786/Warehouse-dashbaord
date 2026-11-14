@@ -528,29 +528,6 @@ function PartyLedger({ onRelock }) {
         </Card>
       )}
 
-      {data.partyAdvances.some((a) => a.partyId === id) && (
-        <Card title="Advance / Deposit History" tight className="mt-2">
-          <div className="table-wrap">
-            <table className="tbl">
-              <thead><tr><th>Date</th><th>Method</th><th>Note</th><th className="r">Received</th><th className="r">Applied</th><th className="r">Remaining</th><th style={{ width: 48 }} /></tr></thead>
-              <tbody>
-                {data.partyAdvances.filter((a) => a.partyId === id).map((a) => (
-                  <tr key={a.id}>
-                    <td>{fmtDate(a.dateReceived)}</td>
-                    <td>{a.method || 'Cash'}</td>
-                    <td className="muted small">{a.note || '—'}</td>
-                    <td className="r"><Money value={a.amount} /></td>
-                    <td className="r"><Money value={a.applied || 0} /></td>
-                    <td className="r strong"><span className="money pos">{money((a.amount || 0) - (a.applied || 0))}</span></td>
-                    <td><Button size="sm" icon={Trash2} onClick={() => setDelAdvance(a)} title="Delete this advance" /></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-      )}
-
       <BillPreview
         open={!!previewId}
         onClose={() => setPreviewId(null)}
