@@ -9,7 +9,7 @@ import { useApp } from '../lib/AppContext.jsx';
 import {
   money, r2, fmtDate, qty, rangeFor, inRange,
 } from '../lib/format.js';
-import { MOVE_TYPES, moveEffect, warehouseExpenseTotal } from '../lib/calc.js';
+import { MOVE_TYPES, moveEffect, warehouseExpenseTotal, wholesaleSaleMoves } from '../lib/calc.js';
 import { exportCSV, printReport } from '../lib/exporters.js';
 import {
   Button, Card, DateRange, Empty, Money, PageHead, Select, Stat,
@@ -43,6 +43,14 @@ export default function WhReports() {
         out.push({ wid: w.id, itemId: l.itemId, type: m.type, date: m.date, inQ: sign > 0 ? q : 0, outQ: sign < 0 ? q : 0, value: r2(q * rate), sign });
       });
     });
+    // Wholesale bills sent from a warehouse take stock out of it too.
+    wholesaleSaleMoves(data).filter((m) => m.status !== 'voided' && inRange(m.date, range.from, range.to)).forEach((m) => {
+      if (!whs.some((w) => w.id === m.warehouseId)) return;
+      m.lines.forEach((l) => {
+        const q = Number(l.qty) || 0;
+        out.push({ wid: m.warehouseId, itemId: l.itemId, type: 'sale', date: m.date, inQ: 0, outQ: q, value: r2(q * (Number(l.rate) || 0)), sign: -1 });
+      });
+    });
     return out;
   }, [data, range, whs]);
 
@@ -60,7 +68,7 @@ export default function WhReports() {
     const labelOf = (k) => {
       if (by === 'item') return data.items.find((i) => i.id === k)?.name || 'Item';
       if (by === 'warehouse') return (data.warehouses || []).find((w) => w.id === k)?.name || 'Warehouse';
-      if (by === 'type') return MOVE_TYPES[k]?.label || k;
+      if (by === 'type') return k === 'sale' ? 'Wholesale Sale' : MOVE_TYPES[k]?.label || k;
       return k;
     };
     const m = new Map();

@@ -8,7 +8,7 @@ import { useApp } from '../lib/AppContext.jsx';
 import { api } from '../lib/api.js';
 import { money, r2, fmtDate, norm, qty } from '../lib/format.js';
 import {
-  MOVE_TYPES, moveEffect, warehouseExpenseTotal, warehouseStockMap, warehouseStockValue,
+  MOVE_TYPES, moveEffect, warehouseExpenseTotal, warehouseStockMap, warehouseStockValue, wholesaleSaleMoves,
 } from '../lib/calc.js';
 import { printReport } from '../lib/exporters.js';
 import {
@@ -62,6 +62,7 @@ export function useWarehouseSummaries() {
   const { data } = useApp();
   return useMemo(() => {
     const map = warehouseStockMap(data);
+    const sales = wholesaleSaleMoves(data);
     const cost = new Map(data.items.map((i) => [i.id, Number(i.costPrice) || 0]));
     return (data.warehouses || []).map((w) => {
       const stock = map.get(w.id) || new Map();
@@ -74,7 +75,8 @@ export function useWarehouseSummaries() {
         value += q * (cost.get(itemId) || 0);
         lines += 1;
       }
-      const moves = (data.whMoves || []).filter((m) => m.status !== 'voided' && (m.warehouseId === w.id || m.toWarehouseId === w.id));
+      // Wholesale bills sent from this warehouse count as movements too.
+      const moves = [...(data.whMoves || []), ...sales].filter((m) => m.status !== 'voided' && (m.warehouseId === w.id || m.toWarehouseId === w.id));
       const last = moves.sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.createdAt).localeCompare(String(a.createdAt)))[0];
       return {
         ...w, units: r2(units), value: r2(value), itemCount: lines, moveCount: moves.length, lastMove: last || null,
@@ -205,10 +207,11 @@ export function WarehouseDetail() {
       .filter((x) => !s || norm(x.item?.name).includes(s) || norm(x.item?.category).includes(s))
       .sort((a, b) => String(a.item?.name).localeCompare(String(b.item?.name)));
   }, [data, id, q]);
-  const moves = useMemo(() => (data.whMoves || [])
+  // Warehouse documents plus wholesale bills sent from this warehouse.
+  const moves = useMemo(() => [...(data.whMoves || []), ...wholesaleSaleMoves(data)]
     .filter((m) => m.warehouseId === id || m.toWarehouseId === id)
     .sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.createdAt).localeCompare(String(a.createdAt)))
-    .slice(0, 12), [data.whMoves, id]);
+    .slice(0, 12), [data, id]);
   if (!wh) return <Empty icon={Warehouse} title="Warehouse not found" action={<Button onClick={() => navigate('/warehouse/list')}>Back to Warehouses</Button>} />;
   const value = warehouseStockValue(data, id);
   const units = r2(stock.reduce((s, x) => s + Math.max(0, x.qty), 0));
@@ -270,14 +273,15 @@ export function WarehouseDetail() {
         </Card>
         <Card title="Recent movements" tight actions={<Button size="sm" onClick={() => { setActiveWarehouse(id); navigate('/warehouse/moves'); }}>View all</Button>}>
           {moves.length ? moves.map((m) => {
-            const sign = moveEffect({ ...m, status: 'active' }, id);
-            const lines = linesOf(m.id);
+            const isSale = m.type === 'sale';
+            const sign = isSale ? -1 : moveEffect({ ...m, status: 'active' }, id);
+            const lines = isSale ? m.lines : linesOf(m.id);
             const total = r2(lines.reduce((s, l) => s + (Number(l.qty) || 0), 0));
             return (
-              <div key={m.id} className="alert-row clickable" onClick={() => navigate(`/warehouse/move/${m.id}`)} style={m.status === 'voided' ? { opacity: 0.55 } : undefined}>
+              <div key={m.id} className="alert-row clickable" onClick={() => navigate(isSale ? `/bill/${m.billId}` : `/warehouse/move/${m.id}`)} style={m.status === 'voided' ? { opacity: 0.55 } : undefined}>
                 <span className={`ico ${sign > 0 ? 'info' : 'warning'}`}>{sign > 0 ? <ArrowDownToLine size={15} /> : <ArrowUpFromLine size={15} />}</span>
                 <div className="body">
-                  <div className="t" style={{ textDecoration: m.status === 'voided' ? 'line-through' : 'none' }}>{m.docNo} · {MOVE_TYPES[m.type]?.label}</div>
+                  <div className="t" style={{ textDecoration: m.status === 'voided' ? 'line-through' : 'none' }}>{m.docNo} · {isSale ? 'Wholesale Sale' : MOVE_TYPES[m.type]?.label}</div>
                   <div className="s">{fmtDate(m.date)} · {lines.length} item{lines.length === 1 ? '' : 's'}{m.partyName ? ` · ${m.partyName}` : ''}</div>
                 </div>
                 <span className="num" style={{ color: sign > 0 ? 'var(--success)' : 'var(--danger)' }}>{sign > 0 ? '+' : '−'}{qty(total)}</span>

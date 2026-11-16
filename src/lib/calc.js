@@ -949,16 +949,6 @@ export function partyLedger(partyId, data = {}, from = null, to = null) {
     });
   });
 
-  partyAdvances.filter((a) => a.partyId === partyId && Number(a.applied) > 0).forEach((a) => {
-    if (!within(a.dateReceived)) return;
-    rows.push({
-      id: `advapp-${a.id}`, date: a.dateReceived, type: 'info', ref: '',
-      title: 'Advance applied to billing',
-      detail: `${rs(a.applied)} of the ${rs(a.amount)} advance has been used`,
-      method: a.method || '', debit: 0, credit: 0, info: true,
-    });
-  });
-
   journalRows('party', partyId, data).filter((r) => within(r.date))
     .forEach((r) => rows.push(r.type === 'jpay' && r.groupId ? { ...r, groupKey: groups.get(r.journalPaymentId) || null } : r));
 

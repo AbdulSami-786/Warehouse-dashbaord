@@ -187,7 +187,10 @@ export default function BillView() {
                   {lines.map((l, i) => (
                     <tr key={l.id}>
                       <td className="muted">{i + 1}</td>
-                      <td style={{ fontWeight: 500 }}>{l.itemName}</td>
+                      <td style={{ fontWeight: 500 }}>
+                        {l.itemName}
+                        {l.warehouseId && <div className="small muted">From {warehouses.find((w) => w.id === l.warehouseId)?.name || (data.warehouses || []).find((w) => w.id === l.warehouseId)?.name || 'warehouse'}</div>}
+                      </td>
                       <td className="r">{l.qty}</td>
                       <td>
                         {l.unit}
