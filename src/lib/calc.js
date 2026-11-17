@@ -826,6 +826,7 @@ function collapseGroups(rows) {
       method: first.method, ref: first.ref, debit: 0,
       credit: r2(g.reduce((s, x) => s + (x.credit || 0), 0)),
       pending: r2(g.reduce((s, x) => s + (x.pending || 0), 0)),
+      held: r2(g.reduce((s, x) => s + (x.held || 0), 0)),
       originalAmount: total, struck: first.struck, reversed: g.every((x) => x.reversed),
       paymentId: null, chequeId: null, billId: null, parts: g,
     };
@@ -903,6 +904,8 @@ export function partyLedger(partyId, data = {}, from = null, to = null) {
         credit: p.reversed || bounced || waiting || p.isAdvance ? 0 : r2(p.amount),
         struck: !!(p.reversed || bounced),
         pending: waiting ? r2(p.amount) : 0,
+        // An advance is held for the party, not set against a bill: it moves no balance, but its amount is shown.
+        held: p.isAdvance && !p.reversed && !bounced && !waiting ? r2(p.amount) : 0,
         originalAmount: r2(p.amount),
         groupKey: groups.get(p.id) || null,
         billNo: bill ? bill.billNo : '',

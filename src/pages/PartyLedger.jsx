@@ -151,10 +151,11 @@ function PartyLedger({ onRelock }) {
       r.detail ? raw(`${esc(r.title)}<br/><span style="color:#6B7280;font-size:10px">${esc(r.detail)}</span>`) : r.title,
       r.method || '—',
       r.debit > 0 ? money(r.debit) : '—',
-      r.credit > 0 ? money(r.credit) : r.pending > 0 ? `(${money(r.pending)})` : '—',
+      r.credit > 0 ? money(r.credit) : r.pending > 0 ? `(${money(r.pending)})` : r.held > 0 ? `(${money(r.held)})` : '—',
       money(r.balance),
     ]),
     totals: ['', filter === 'all' ? 'Closing balance' : 'Total shown · closing balance', '', money(shown.reduce((s, r) => s + r.debit, 0)), money(shown.reduce((s, r) => s + r.credit, 0)), money(closing)],
+    meta: totals.advance > 0 ? [`Advance balance: ${money(totals.advance)}`] : undefined,
   });
   const buyFrom = async () => {
     if (linking) return;
@@ -298,7 +299,7 @@ function PartyLedger({ onRelock }) {
         <Card
           title="Account Statement"
           tight
-          subtitle={`${filter === 'all' ? ledger.length : `${shown.length} of ${ledger.length}`} entries · closing balance ${money(closing)}`}
+          subtitle={`${filter === 'all' ? ledger.length : `${shown.length} of ${ledger.length}`} entries · closing balance ${money(closing)}${totals.advance > 0 ? ` · advance balance ${money(totals.advance)}` : ''}`}
           actions={<Button size="sm" icon={Printer} onClick={printStatement}>Print</Button>}
         >
           {ledger.length > 0 && (
@@ -349,6 +350,7 @@ function PartyLedger({ onRelock }) {
                         <td className="r strong">
                           {r.credit > 0 ? <span className="money pos">{money(r.credit)}</span>
                             : r.pending > 0 ? <span className="money" style={{ color: '#B45309' }}>({money(r.pending)})</span>
+                              : r.held > 0 ? <span className="money pos" title="Advance held — not set against a bill">({money(r.held)})</span>
                               : r.struck ? <span className="muted small" style={{ textDecoration: 'line-through' }}>{money(r.originalAmount)}</span>
                                 : <span className="muted">—</span>}
                         </td>
@@ -365,6 +367,13 @@ function PartyLedger({ onRelock }) {
                       <td className="r" style={{ fontSize: 14 }}>{money(closing)}</td>
                       <td />
                     </tr>
+                    {totals.advance > 0 && (
+                      <tr>
+                        <td colSpan={5}>Advance balance (held for this party)</td>
+                        <td className="r money pos" style={{ fontSize: 14 }}>{money(totals.advance)}</td>
+                        <td />
+                      </tr>
+                    )}
                   </tfoot>
                 </table>
               </div>
@@ -379,7 +388,7 @@ function PartyLedger({ onRelock }) {
                     <div className="top">
                       <span className="name" style={{ textDecoration: r.voided ? 'line-through' : 'none' }}>{r.isPart ? `↳ ${partName(r)}` : r.title}</span>
                       <span className="amt" style={{ color: r.debit > 0 ? 'var(--danger)' : r.pending > 0 ? '#B45309' : 'var(--success)' }}>
-                        {r.debit > 0 ? `+${money(r.debit)}` : r.credit > 0 ? `−${money(r.credit)}` : r.pending > 0 ? `(${money(r.pending)})` : '—'}
+                        {r.debit > 0 ? `+${money(r.debit)}` : r.credit > 0 ? `−${money(r.credit)}` : r.pending > 0 ? `(${money(r.pending)})` : r.held > 0 ? `(${money(r.held)})` : '—'}
                       </span>
                     </div>
                     {r.detail && <div className="small muted">{r.detail}</div>}

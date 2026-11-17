@@ -60,6 +60,7 @@ function FullStatement({ data, onBill }) {
     [ledger, openGroups],
   );
   const closing = ledger.length ? ledger[ledger.length - 1].balance : 0;
+  const advance = r2((data.partyAdvances || []).reduce((s, a) => s + (Number(a.amount) || 0) - (Number(a.applied) || 0), 0));
   const toggle = (r) => setOpenGroups((g) => ({ ...g, [r.id]: !g[r.id] }));
   const open = (r) => {
     if (r.parts) toggle(r);
@@ -83,6 +84,7 @@ function FullStatement({ data, onBill }) {
         <div className="ledger-title-right">
           <div className="ledger-kicker">Closing balance</div>
           <div className="ledger-closing" style={{ color: closing > 0.004 ? 'var(--danger)' : 'var(--success)' }}>{drcr(closing)}</div>
+          {advance > 0 && <div className="small" style={{ color: 'var(--success)' }}>Advance balance {money(advance)}</div>}
           <Button size="sm" icon={Printer} className="no-print" onClick={() => window.print()}>Print</Button>
         </div>
       </div>
@@ -118,6 +120,7 @@ function FullStatement({ data, onBill }) {
                     <td className="r strong">
                       {r.credit > 0 ? <span className="money pos">{money(r.credit)}</span>
                         : r.pending > 0 ? <span className="money" style={{ color: '#B45309' }}>({money(r.pending)})</span>
+                              : r.held > 0 ? <span className="money pos" title="Advance held — not set against a bill">({money(r.held)})</span>
                           : r.struck ? <span className="muted small" style={{ textDecoration: 'line-through' }}>{money(r.originalAmount)}</span>
                             : <span className="muted">—</span>}
                     </td>
@@ -136,6 +139,12 @@ function FullStatement({ data, onBill }) {
                   <td colSpan={4}>Closing balance{closing < -0.004 && ' (in your favour)'}</td>
                   <td className="r">{drcr(closing)}</td>
                 </tr>
+                {advance > 0 && (
+                  <tr>
+                    <td colSpan={4}>Advance balance (held for you)</td>
+                    <td className="r money pos">{money(advance)}</td>
+                  </tr>
+                )}
               </tfoot>
             </table>
           </div>
@@ -150,7 +159,7 @@ function FullStatement({ data, onBill }) {
                 <div className="top">
                   <span className="name" style={{ textDecoration: r.voided ? 'line-through' : 'none' }}>{r.isPart ? `↳ ${partName(r)}` : r.title}</span>
                   <span className="amt" style={{ color: r.debit > 0 ? 'var(--danger)' : r.pending > 0 ? '#B45309' : 'var(--success)' }}>
-                    {r.debit > 0 ? `+${money(r.debit)}` : r.credit > 0 ? `−${money(r.credit)}` : r.pending > 0 ? `(${money(r.pending)})` : '—'}
+                    {r.debit > 0 ? `+${money(r.debit)}` : r.credit > 0 ? `−${money(r.credit)}` : r.pending > 0 ? `(${money(r.pending)})` : r.held > 0 ? `(${money(r.held)})` : '—'}
                   </span>
                 </div>
                 {r.detail && <div className="small muted">{r.detail}</div>}
