@@ -361,7 +361,7 @@ function PartyLedger({ onRelock }) {
                   </tbody>
                   <tfoot>
                     <tr>
-                      <td colSpan={3}>{filter === 'all' ? 'Closing balance' : 'Total shown · closing balance'}{closing < -0.004 && ' (you owe them)'}</td>
+                      <td colSpan={3}>{filter === 'all' ? 'Closing balance' : 'Total shown · closing balance'}{closing < -0.004 && (totals.advance > 0 ? ' (advance — in their favour)' : ' (you owe them)')}</td>
                       <td className="r">{money(shown.reduce((s, r) => s + r.debit, 0))}</td>
                       <td className="r">{money(shown.reduce((s, r) => s + r.credit, 0))}</td>
                       <td className="r" style={{ fontSize: 14 }}>{money(closing)}</td>
@@ -397,7 +397,7 @@ function PartyLedger({ onRelock }) {
                       {r.method && <Pill status="neutral" label={r.method} />}
                       <span className="spacer" />
                       {r.parts && <span className="small" style={{ fontWeight: 600 }}>{openGroups[r.id] ? 'Hide parts' : `${r.parts.length} parts`}</span>}
-                      {!r.isPart && <span style={{ fontWeight: 700 }}>Bal {money(r.balance)}</span>}
+                      {!r.isPart && <span style={{ fontWeight: 700, color: r.balance < -0.004 ? 'var(--success)' : undefined }}>Bal {money(r.balance)}</span>}
                     </div>
                     {(r.billId || (r.paymentId && !r.reversed) || r.chequeId || r.supplierPaymentId || (r.type === 'journal' && r.journalId) || (r.journalPaymentId && !r.parts) || r.parts) && (
                       <div className="row wrap" style={{ gap: 6, marginTop: 8 }}>{rowActions(r, true)}</div>

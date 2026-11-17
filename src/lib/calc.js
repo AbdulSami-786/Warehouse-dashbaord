@@ -827,6 +827,7 @@ function collapseGroups(rows) {
       credit: r2(g.reduce((s, x) => s + (x.credit || 0), 0)),
       pending: r2(g.reduce((s, x) => s + (x.pending || 0), 0)),
       held: r2(g.reduce((s, x) => s + (x.held || 0), 0)),
+      advBack: r2(g.reduce((s, x) => s + (x.advBack || 0), 0)),
       originalAmount: total, struck: first.struck, reversed: g.every((x) => x.reversed),
       paymentId: null, chequeId: null, billId: null, parts: g,
     };
@@ -906,6 +907,8 @@ export function partyLedger(partyId, data = {}, from = null, to = null) {
         pending: waiting ? r2(p.amount) : 0,
         // An advance is held for the party, not set against a bill: it moves no balance, but its amount is shown.
         held: p.isAdvance && !p.reversed && !bounced && !waiting ? r2(p.amount) : 0,
+        // A bill paid out of the advance: the money was already counted when the advance arrived.
+        advBack: p.method === 'Advance' && !p.isAdvance && !p.reversed ? r2(p.amount) : 0,
         originalAmount: r2(p.amount),
         groupKey: groups.get(p.id) || null,
         billNo: bill ? bill.billNo : '',
@@ -959,9 +962,11 @@ export function partyLedger(partyId, data = {}, from = null, to = null) {
   const order = { bill: 0, journal: 0, payment: 1, jpay: 1, advance: 1, 'cheque-pending': 1, return: 2, reversal: 3, bounced: 3, void: 4, info: 5 };
   folded.sort((a, b) => new Date(a.date) - new Date(b.date) ||
     (order[a.type] ?? 9) - (order[b.type] ?? 9) || String(a.id).localeCompare(String(b.id)));
+  // The running balance counts an advance the party holds as money in their favour
+  // (so it can read below zero), and takes it back out as it is spent on bills.
   let bal = 0;
   return folded.map((r) => {
-    bal = r2(bal + r.debit - r.credit);
+    bal = r2(bal + r.debit - r.credit - (r.held || 0) + (r.advBack || 0));
     return { ...r, balance: bal };
   });
 }
@@ -1119,7 +1124,7 @@ export function combinedPartyLedger(partyId, data = {}, from = null, to = null) 
     (order[a.type] ?? 9) - (order[b.type] ?? 9) || String(a.id).localeCompare(String(b.id)));
   let bal = 0;
   return all.map((r) => {
-    bal = r2(bal + r.debit - r.credit);
+    bal = r2(bal + r.debit - r.credit - (r.held || 0) + (r.advBack || 0));
     return { ...r, balance: bal };
   });
 }
