@@ -207,7 +207,7 @@ var BOOLEAN = { reversed: 1, restock: 1, active: 1, isAdvance: 1 };
  * was not updated (Deploy > Manage deployments > edit > New version > Deploy).
  * Keep in step with package.json.
  */
-var BACKEND_VERSION = '2.7.26';
+var BACKEND_VERSION = '2.7.27';
 
 function doGet(e) {
   return json({ ok: true, data: { status: 'SGA Balloon Merchant backend is running', version: BACKEND_VERSION } });
@@ -406,6 +406,7 @@ function dispatch(action, p, token) {
 
     case 'addAdvance':       return addAdvance(p);
     case 'deleteAdvance':    return deleteAdvance(p);
+    case 'reconcileAdvance': return reconcileAdvance(p);
     case 'savePurchase':     return savePurchase(p);
     case 'updatePurchase':   return updatePurchase(p);
     case 'deletePurchase':   return deletePurchase(p);
@@ -506,7 +507,7 @@ var ACTION_PAGES = {
   addPayment: ['bills', 'parties', 'outstanding'],
   reversePayment: ['bills', 'parties'], deletePayment: ['parties'], updatePayment: ['parties'],
   settleParty: ['parties', 'outstanding'],
-  addAdvance: ['parties'], deleteAdvance: ['parties'],
+  addAdvance: ['parties'], deleteAdvance: ['parties'], reconcileAdvance: ['parties', 'bills', 'outstanding'],
   addReturn: ['returns', 'bills', 'parties'],
   saveCheque: ['cheques'], setChequeStatus: ['cheques', 'parties', 'bills'], deleteCheque: ['cheques', 'parties'],
   savePurchase: ['purchases'], updatePurchase: ['purchases', 'suppliers'], deletePurchase: ['purchases', 'suppliers'],
@@ -3682,10 +3683,81 @@ function addAdvance(p) {
     }
 
     logActivity('advance', rec.id, 'create', 'Advance received ' + rec.amount);
-    // Journal amounts already waiting to be collected from this party come out of it.
+    // Whatever this party already owes — unpaid bills, journal amounts to collect — comes out of it.
     // A cheque is not money until it clears, so it is left alone.
-    if (rec.method !== 'Cheque') settleJournalFromAdvance(getById('Parties', p.partyId), null);
+    if (rec.method !== 'Cheque') settleDuesFromAdvance(getById('Parties', p.partyId));
     return rec;
+  });
+}
+
+/**
+ * Spend whatever advance a party holds on everything they still owe — unpaid
+ * bills and the journal's money to take — oldest first, a bill before a journal
+ * entry of the same day. Each bill gets an 'Advance' payment and each journal
+ * entry an 'Advance' journal payment; none of it moves cash, since the money
+ * arrived with the advance. Returns the total spent. Mirror of
+ * settleDuesFromAdvance in src/lib/localAdapter.js.
+ */
+function settleDuesFromAdvance(party) {
+  var avail = advanceAvailable(party.id);
+  if (!(avail > 0.004)) return 0;
+  var book = dueBook();
+  var queue = [];
+  readAll('Bills').forEach(function (b) {
+    if (b.partyId !== party.id || b.status === 'voided') return;
+    var room = book.due(b);
+    if (room > 0.004) queue.push({ kind: 'bill', date: String(dayOf(b.date) || ''), order: String(b.billNo || ''), b: b, room: room });
+  });
+  var settled = {};
+  readAll('JournalPayments').forEach(function (x) {
+    settled[x.journalId] = r2((settled[x.journalId] || 0) + (Number(x.amount) || 0));
+  });
+  readAll('Journal').forEach(function (e) {
+    if (e.kind !== 'party' || e.partyId !== party.id || e.direction !== 'take') return;
+    var room = r2(r2(e.amount) - (settled[e.id] || 0));
+    if (room > 0.004) queue.push({ kind: 'journal', date: String(dayOf(e.date) || ''), order: String(e.createdAt || ''), e: e, room: room });
+  });
+  queue.sort(function (a, b) {
+    return a.date.localeCompare(b.date) ||
+           (a.kind === b.kind ? a.order.localeCompare(b.order) : (a.kind === 'bill' ? -1 : 1));
+  });
+
+  var day = todayISO();
+  var total = 0;
+  for (var i = 0; i < queue.length && avail > 0.004; i++) {
+    var item = queue[i];
+    var used = applyAdvance(party.id, r2(Math.min(item.room, avail)));
+    if (!(used > 0)) break;
+    avail = r2(avail - used);
+    total = r2(total + used);
+    if (item.kind === 'bill') {
+      appendRow('Payments', {
+        id: uid('pay'), billId: item.b.id, partyId: party.id, method: 'Advance', amount: used,
+        date: day, note: 'Advance applied', reversed: false, reversedAt: '', reverseReason: '', isAdvance: false
+      });
+    } else {
+      appendRow('JournalPayments', {
+        id: uid('jpy'), journalId: item.e.id, kind: 'party', partyId: party.id, direction: 'in',
+        amount: used, date: day, method: 'Advance', note: 'Advance applied',
+        createdAt: nowISO(), createdBy: ACTING_USER
+      });
+    }
+  }
+  if (total > 0) {
+    logActivity('advance', party.id, 'edit', total + ' of "' + party.name + '"\'s advance applied to what they owed');
+  }
+  return total;
+}
+
+/**
+ * Spend a party's advance on what they owe, for amounts that were on the books
+ * before advances were applied automatically. Does nothing when there is none.
+ */
+function reconcileAdvance(p) {
+  return withLock(function () {
+    var party = getById('Parties', p.partyId);
+    if (!party) fail('Party not found');
+    return { total: settleDuesFromAdvance(party) };
   });
 }
 

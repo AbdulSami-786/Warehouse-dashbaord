@@ -13,6 +13,7 @@ import {
 } from '../lib/calc.js';
 import { exportCSV, printReport, billPDF, raw, esc } from '../lib/exporters.js';
 import { canOpen, isLocked, relock } from '../lib/partyLock.js';
+import { useAdvanceReconcile } from '../lib/useAdvanceReconcile.js';
 import {
   ActionSheet, Button, Card, Confirm, Empty, Money, PageHead, Pill, Stat,
 } from '../components/ui.jsx';
@@ -45,7 +46,7 @@ export default function PartyLedgerGate() {
 function PartyLedger({ onRelock }) {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { data, settings, mutate, toast, access } = useApp();
+  const { data, settings, mutate, toast, access, refresh } = useApp();
   const buys = access.canAny(['purchases', 'suppliers']);
   const [lockOpen, setLockOpen] = useState(false);
   const [payBill, setPayBill] = useState(null);
@@ -110,6 +111,9 @@ function PartyLedger({ onRelock }) {
   const countOf = (f) => ledger.filter((r) => ledgerFilterMatch(r, f)).length;
   const rows = useMemo(() => shown.flatMap((r) => (r.parts && openGroups[r.id] ? [r, ...r.parts.map((p) => ({ ...p, isPart: true }))] : [r])), [shown, openGroups]);
   const link = data.partyLedgerLinks.find((l) => l.partyId === id);
+  // An advance this party holds is spent on what they still owe, bills and journal alike.
+  const reconcileIds = useMemo(() => [id], [id]);
+  useAdvanceReconcile(data, refresh, reconcileIds);
 
   if (!party) {
     return <Empty title="Party not found" message="This party may have been removed." action={<Button onClick={() => navigate('/parties')}>Back to Parties</Button>} />;

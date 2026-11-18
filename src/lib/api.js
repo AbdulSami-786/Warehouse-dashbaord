@@ -45,6 +45,7 @@ export const api = {
 
   addAdvance: (p) => call('addAdvance', p),
   deleteAdvance: (id, reason) => call('deleteAdvance', { id, reason }),
+  reconcileAdvance: (partyId) => call('reconcileAdvance', { partyId }),
 
   savePurchase: (p) => call('savePurchase', p),
   updatePurchase: (p) => call('updatePurchase', p),

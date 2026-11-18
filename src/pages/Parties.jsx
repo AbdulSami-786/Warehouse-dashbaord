@@ -8,6 +8,7 @@ import { api } from '../lib/api.js';
 import { money, norm, r2, whatsappUrl } from '../lib/format.js';
 import { billStates, isOpeningBill, partyDue, advanceAvailable, journalOwed } from '../lib/calc.js';
 import { canOpen, isLocked } from '../lib/partyLock.js';
+import { useAdvanceReconcile } from '../lib/useAdvanceReconcile.js';
 import {
   Button, Card, Confirm, Empty, Modal, PageHead, Pill, SearchBox,
 } from '../components/ui.jsx';
@@ -15,8 +16,10 @@ import { PartyForm } from '../components/forms.jsx';
 import ImportButton from '../components/ImportButton.jsx';
 
 export default function Parties() {
-  const { data, settings, mutate } = useApp();
+  const { data, settings, mutate, refresh } = useApp();
   const navigate = useNavigate();
+  // A party holding an advance has it spent on what they owe, bills and journal alike.
+  useAdvanceReconcile(data, refresh);
   const [q, setQ] = useState('');
   const [archived, setArchived] = useState(false);
   const [editing, setEditing] = useState(null);
