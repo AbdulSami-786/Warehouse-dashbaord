@@ -772,6 +772,8 @@ export function journalRows(kind, partyId, data = {}) {
         title: take ? 'Collected — journal' : 'Paid — journal',
         detail: [e.title, p.note].filter(Boolean).join(' · '), method: p.method || '',
         debit: take ? 0 : amount, credit: take ? amount : 0,
+        // Paid out of the party's advance: that money was already counted when the advance arrived.
+        advBack: take && p.method === 'Advance' ? amount : 0,
         // Used when this is one part of a receipt that also cleared bills.
         groupId: p.groupId || '', originalAmount: amount, partLabel: `Journal — ${e.title || 'entry'}`, noteText: p.note || '',
       });
@@ -824,9 +826,12 @@ function collapseGroups(rows) {
       title: viaJournal ? `Payment — ${first.method}` : first.title,
       detail: [split.join(', ') + ` = ${rs(total)}`, first.chequeText, ...notes].filter(Boolean).join(' · '),
       method: first.method, ref: first.ref, debit: 0,
-      credit: r2(g.reduce((s, x) => s + (x.credit || 0), 0)),
+      // The whole receipt is one credit: the part set against bills plus the
+      // part held as advance (10 paid = 7 on a bill + 3 advance shows 10). The
+      // running balance is the same either way, since held also lowers it.
+      credit: r2(g.reduce((s, x) => s + (x.credit || 0) + (x.held || 0), 0)),
       pending: r2(g.reduce((s, x) => s + (x.pending || 0), 0)),
-      held: r2(g.reduce((s, x) => s + (x.held || 0), 0)),
+      held: 0,
       advBack: r2(g.reduce((s, x) => s + (x.advBack || 0), 0)),
       originalAmount: total, struck: first.struck, reversed: g.every((x) => x.reversed),
       paymentId: null, chequeId: null, billId: null, parts: g,

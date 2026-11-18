@@ -148,7 +148,7 @@ function PartyLedger({ onRelock }) {
     headers: ['Date', 'Particulars', 'Method', { label: 'Debit', align: 'r' }, { label: 'Credit', align: 'r' }, { label: 'Balance', align: 'r' }],
     rows: shown.map((r) => [
       fmtDate(r.date),
-      r.detail ? raw(`${esc(r.title)}<br/><span style="color:#6B7280;font-size:10px">${esc(r.detail)}</span>`) : r.title,
+      r.title,
       r.method || '—',
       r.debit > 0 ? money(r.debit) : '—',
       r.credit > 0 ? money(r.credit) : r.pending > 0 ? `(${money(r.pending)})` : r.held > 0 ? `(${money(r.held)})` : '—',
@@ -343,7 +343,6 @@ function PartyLedger({ onRelock }) {
                             {r.side === 'purchase' && <><Pill status="partial" label="Purchase" />{' '}</>}
                             {r.isPart ? `↳ ${partName(r)}` : r.title}
                           </div>
-                          {r.detail && <div className="small muted">{r.detail}</div>}
                         </td>
                         <td className="small">{r.method ? <Pill status="neutral" label={r.method} /> : <span className="muted">—</span>}</td>
                         <td className="r strong">{r.debit > 0 ? <Money value={r.debit} /> : <span className="muted">—</span>}</td>
@@ -391,7 +390,6 @@ function PartyLedger({ onRelock }) {
                         {r.debit > 0 ? `+${money(r.debit)}` : r.credit > 0 ? `−${money(r.credit)}` : r.pending > 0 ? `(${money(r.pending)})` : r.held > 0 ? `(${money(r.held)})` : '—'}
                       </span>
                     </div>
-                    {r.detail && <div className="small muted">{r.detail}</div>}
                     <div className="meta">
                       <span>{fmtDate(r.date)}</span>
                       {r.method && <Pill status="neutral" label={r.method} />}

@@ -6,7 +6,7 @@ import { CONFIG, PAYMENT_METHODS } from './config.js';
 import { r2, today, addDays, uid, phoneKey, nameKey, dayOf } from './format.js';
 import {
   billState, billTotals, isOpeningBill, payableNow, lineDelivered, lineReceived, supplierBalance,
-  MOVE_TYPES, warehouseStockMap, itemStock, journalClaims, moveFlows,
+  MOVE_TYPES, warehouseStockMap, itemStock, journalClaims, moveFlows, advanceAvailable,
 } from './calc.js';
 import { accessOf, stripCostData, COST_PAGES, PAGES } from './permissions.js';
 
@@ -381,6 +381,47 @@ function assertMethod(method) {
   }
 }
 
+/** Spend a party's advances, oldest first. Returns what was actually taken. */
+function takeAdvance(db, partyId, amount) {
+  let left = r2(amount);
+  for (const a of db.partyAdvances.filter((x) => x.partyId === partyId)) {
+    if (left <= 0.004) break;
+    const avail = (Number(a.amount) || 0) - (Number(a.applied) || 0);
+    if (avail <= 0) continue;
+    const use = r2(Math.min(avail, left));
+    a.applied = r2((Number(a.applied) || 0) + use);
+    left = r2(left - use);
+  }
+  return r2(amount - left);
+}
+
+/**
+ * Money to take from a shop party is paid out of their advance first. Walks the
+ * party's journal entries that still have something to collect (just `onlyId`
+ * when given), oldest first, and records each amount as a journal payment by
+ * the 'Advance' method, which moves no cash. Returns the total taken.
+ */
+function settleJournalFromAdvance(db, party, onlyId = null) {
+  let total = 0;
+  const claims = journalClaims('party', party.id, db)
+    .filter((c) => c.direction === 'take' && c.outstanding > 0.004 && (!onlyId || c.id === onlyId))
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+  for (const c of claims) {
+    const room = Math.min(c.outstanding, advanceAvailable(party.id, db.partyAdvances));
+    if (!(room > 0.004)) break;
+    const used = takeAdvance(db, party.id, room);
+    if (!(used > 0)) break;
+    db.journalPayments.push({
+      id: uid('jpy'), journalId: c.id, kind: 'party', partyId: party.id, direction: 'in',
+      amount: used, date: c.date, method: 'Advance', note: 'Advance applied',
+      createdAt: new Date().toISOString(), createdBy: getSession()?.username || 'system',
+    });
+    log(db, 'journal payment', c.id, 'create', `Collected ${used} from "${party.name}" out of their advance`);
+    total = r2(total + used);
+  }
+  return total;
+}
+
 /** Give money taken from a party's advances back, newest advance first. */
 function restoreAdvance(db, partyId, amount) {
   let left = r2(amount);
@@ -621,6 +662,10 @@ async function perform(action, p = {}) {
       if (r2(payTotal + wantAdvance) > room + 0.004) {
         throw new Error(`Payments of ${r2(payTotal + wantAdvance).toFixed(2)} are more than ${editing ? 'is left to pay on this bill' : 'the bill total'} (${room.toFixed(2)}). Reduce a payment, or record the extra as an advance from the party ledger.`);
       }
+      // A new bill takes whatever advance the party holds, up to what is still unpaid on it.
+      const autoAdvance = editing ? 0 : r2(Math.max(0, Math.min(
+        advanceAvailable(p.partyId, db.partyAdvances) - wantAdvance, room - payTotal - wantAdvance)));
+      const advanceUsed = r2(wantAdvance + autoAdvance);
       if (editing) {
         const i = db.bills.findIndex((b) => b.id === p.id);
         const before = { ...db.bills[i] };
@@ -675,17 +720,9 @@ async function perform(action, p = {}) {
         db.payments.push(rec);
         if (pay.method === 'Cheque' && pay.cheque) db.cheques.push(chequeRow(pay.cheque, { billId: bill.id, partyId: bill.partyId, paymentId: rec.id, amount: pay.amount, date: bill.date }));
       });
-      if (Number(p.advanceApplied) > 0) {
-        let want = Number(p.advanceApplied);
-        db.partyAdvances.filter((a) => a.partyId === bill.partyId).forEach((a) => {
-          if (want <= 0) return;
-          const avail = (Number(a.amount) || 0) - (Number(a.applied) || 0);
-          if (avail <= 0) return;
-          const use = Math.min(avail, want);
-          a.applied = r2((Number(a.applied) || 0) + use);
-          want = r2(want - use);
-        });
-        db.payments.push({ id: uid('pay'), billId: bill.id, partyId: bill.partyId, method: 'Advance', amount: r2(p.advanceApplied), date: bill.date, note: 'Advance applied', reversed: false });
+      if (advanceUsed > 0) {
+        const used = takeAdvance(db, bill.partyId, advanceUsed);
+        db.payments.push({ id: uid('pay'), billId: bill.id, partyId: bill.partyId, method: 'Advance', amount: used, date: bill.date, note: 'Advance applied', reversed: false });
       }
       syncDeliveryFlag(db, bill);
       save();
@@ -1072,6 +1109,10 @@ async function perform(action, p = {}) {
         db.cheques.push({ ...chequeRow(p.cheque || {}, { billId: '', partyId: p.partyId, paymentId: payId, amount: rec.amount, date: rec.dateReceived }), statusChangedAt: '' });
       }
       log(db, 'advance', rec.id, 'create', `Advance received ${rec.amount}`);
+      // Journal amounts already waiting to be collected from this party come out of it.
+      // A cheque is not money until it clears, so it is left alone.
+      const advParty = db.parties.find((x) => x.id === p.partyId);
+      if (advParty && rec.method !== 'Cheque') settleJournalFromAdvance(db, advParty);
       save();
       return rec;
     }
@@ -1096,6 +1137,15 @@ async function perform(action, p = {}) {
           spent.add(x.id);
           budget = r2(budget - r2(x.amount));
         }
+        // Journal amounts collected out of this advance reopen too.
+        const spentJournal = new Set();
+        for (const x of db.journalPayments) {
+          if (budget <= 0.004) break;
+          if (x.kind !== 'party' || x.partyId !== adv.partyId || x.method !== 'Advance') continue;
+          spentJournal.add(x.id);
+          budget = r2(budget - r2(x.amount));
+        }
+        db.journalPayments = db.journalPayments.filter((x) => !spentJournal.has(x.id));
       }
       const gone = new Set(spent);
       if (receipt) gone.add(receipt.id);
@@ -1901,11 +1951,14 @@ async function perform(action, p = {}) {
         const i = db.journal.indexOf(existing);
         db.journal[i] = { ...existing, ...data };
         log(db, 'journal', p.id, 'edit', `Edited journal entry — ${owner.name}`);
+        // Saving an entry that still has something to collect takes it from the advance.
+        settleJournalFromAdvance(db, owner, db.journal[i].id);
         save();
         return db.journal[i];
       }
       const rec = { id: uid('jrn'), kind: p.kind, partyId: owner.id, ...data, createdAt: data.updatedAt, createdBy: getSession()?.username || 'system' };
       db.journal.push(rec);
+      settleJournalFromAdvance(db, owner, rec.id);
       log(db, 'journal', rec.id, 'create', `Added journal entry — ${owner.name}${amount > 0 ? ` (${direction === 'take' ? 'to take' : 'to give'} ${amount})` : ''}`);
       save();
       return rec;
@@ -1956,6 +2009,8 @@ async function perform(action, p = {}) {
       const rec = db.journalPayments[i];
       if (rec.kind !== 'party') assertSeesMoney(db);
       db.journalPayments.splice(i, 1);
+      // Money that came out of the party's advance goes back to it.
+      if (rec.method === 'Advance') restoreAdvance(db, rec.partyId, rec.amount);
       log(db, 'journal payment', rec.id, 'delete', `Deleted journal ${rec.direction === 'in' ? 'collection' : 'payment'} of ${rec.amount}${p.reason ? ` — ${p.reason}` : ''}`, rec, null);
       save();
       return { ok: true };

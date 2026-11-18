@@ -322,9 +322,12 @@ export default function BillForm() {
   const totals = useMemo(() => billTotals(valid.map((l) => ({ qty: baseQty(l), price: Number(l.price) })), settings.roundingRule), [valid, settings.roundingRule, data.items]);
   const paidNow = useMemo(() => r2(pays.reduce((s, p) => s + (Number(p.amount) || 0), 0)), [pays]);
   const advance = useMemo(() => (partyId ? advanceAvailable(partyId, data.partyAdvances) : 0), [partyId, data.partyAdvances]);
-  const credit = useMemo(() => r2(Math.max(0, totals.total - paidNow - Number(applyAdvance || 0))), [totals.total, paidNow, applyAdvance]);
-  const overpaid = r2(paidNow + Number(applyAdvance || 0) - totals.total);
-  const advanceTooMuch = r2(Number(applyAdvance) || 0) > advance + 0.004;
+  // A new bill takes the party's advance on its own, up to what is still unpaid;
+  // an edited bill keeps whatever advance was set by hand.
+  const advUsed = editing ? r2(Number(applyAdvance) || 0) : r2(Math.max(0, Math.min(advance, totals.total - paidNow)));
+  const credit = useMemo(() => r2(Math.max(0, totals.total - paidNow - advUsed)), [totals.total, paidNow, advUsed]);
+  const overpaid = r2(paidNow + advUsed - totals.total);
+  const advanceTooMuch = advUsed > advance + 0.004;
   // Money beyond the bill has nowhere to go on this bill, so it is not saved.
   const blocked = overpaid > 0.004 || advanceTooMuch;
 
@@ -344,7 +347,8 @@ export default function BillForm() {
   const updPay = (key, patch) => setPays((ps) => ps.map((p) => (p.key === key ? { ...p, ...patch } : p)));
   const fillPay = (key) => {
     const others = r2(pays.filter((p) => p.key !== key).reduce((s, p) => s + (Number(p.amount) || 0), 0));
-    updPay(key, { amount: String(r2(Math.max(0, totals.total - others - Number(applyAdvance || 0)))) });
+    const fromAdvance = editing ? Number(applyAdvance || 0) : Math.max(0, Math.min(advance, totals.total - others));
+    updPay(key, { amount: String(r2(Math.max(0, totals.total - others - fromAdvance))) });
   };
 
   /* ---- Tabs: several bills written side by side ---- */
@@ -427,7 +431,7 @@ export default function BillForm() {
         // Someone who cannot see cost leaves it to the server, which knows it.
         lines: valid.map((l) => ({ itemId: l.itemId, qty: baseQty(l), price: Number(l.price), unit: baseQty(l) === Number(l.qty) ? l.unit : data.items.find((i) => i.id === l.itemId).baseUnit, warehouseId: l.warehouseId || '', ...(access.seesCost ? { costPriceAtSale: l.costPriceAtSale } : {}) })),
         payments: pays.filter((p) => Number(p.amount) > 0).map((p) => ({ method: p.method, amount: Number(p.amount), cheque: p.cheque, note: '' })),
-        advanceApplied: Number(applyAdvance) || 0,
+        advanceApplied: advUsed,
         subtotal: totals.subtotal, roundOff: totals.roundOff, total: totals.total,
         dueDate: credit > 0 ? dueDate : '', note, delivery: pending ? 'pending' : 'delivered',
       };
@@ -678,7 +682,13 @@ export default function BillForm() {
           </Card>
 
           <Card title="Payment" subtitle="Split across any methods — the remainder becomes Credit" actions={<Button size="sm" icon={Plus} onClick={() => setPays((ps) => [...ps, newPay()])}>Add method</Button>}>
-            {advance > 0 && (r2(applyAdvance) > 0 ? (
+            {advance > 0 && !editing && (
+              <div className="note" style={{ marginBottom: 12 }}>
+                <Wallet size={14} />
+                <span style={{ flex: 1 }}><strong>{party?.name || 'This party'}</strong> has <strong>{money(advance)}</strong> advance with you — it is taken off this bill automatically{advUsed > 0 ? ` (${money(advUsed)} now)` : ''}.</span>
+              </div>
+            )}
+            {advance > 0 && editing && (r2(applyAdvance) > 0 ? (
               <Field
                 label="Advance applied"
                 hint={`${money(advance)} available in total`}
@@ -713,7 +723,7 @@ export default function BillForm() {
             ))}
             <div style={{ borderTop: '1px solid var(--border)', paddingTop: 11, marginTop: 4 }}>
               <SumRow label="Paid now" value={paidNow} muted />
-              {Number(applyAdvance) > 0 && <SumRow label="From advance" value={Number(applyAdvance)} muted />}
+              {advUsed > 0 && <SumRow label="From advance" value={advUsed} muted />}
               {credit > 0 ? (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 9, padding: '10px 12px', background: 'var(--danger-bg)', border: '1px solid #FECACA', borderRadius: 'var(--r-sm)' }}>
                   <CreditCard size={16} color="#B91C1C" style={{ flex: 'none' }} />

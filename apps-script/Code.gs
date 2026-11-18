@@ -207,7 +207,7 @@ var BOOLEAN = { reversed: 1, restock: 1, active: 1, isAdvance: 1 };
  * was not updated (Deploy > Manage deployments > edit > New version > Deploy).
  * Keep in step with package.json.
  */
-var BACKEND_VERSION = '2.7.20';
+var BACKEND_VERSION = '2.7.26';
 
 function doGet(e) {
   return json({ ok: true, data: { status: 'SGA Balloon Merchant backend is running', version: BACKEND_VERSION } });
@@ -2485,6 +2485,12 @@ function saveBill(p) {
            (editing ? 'is left to pay on this bill' : 'the bill total') + ' (' + room.toFixed(2) + '). ' +
            'Reduce a payment, or record the extra as an advance from the party ledger.');
     }
+    // A new bill takes whatever advance the party holds, up to what is still
+    // unpaid on it, without being asked.
+    if (!editing) {
+      wantAdvance = r2(wantAdvance + Math.max(0, Math.min(
+        advanceAvailable(p.partyId) - wantAdvance, room - payTotal - wantAdvance)));
+    }
 
     if (editing) {
       /* ---- Editing an existing bill (FR-25) ---- */
@@ -3676,6 +3682,9 @@ function addAdvance(p) {
     }
 
     logActivity('advance', rec.id, 'create', 'Advance received ' + rec.amount);
+    // Journal amounts already waiting to be collected from this party come out of it.
+    // A cheque is not money until it clears, so it is left alone.
+    if (rec.method !== 'Cheque') settleJournalFromAdvance(getById('Parties', p.partyId), null);
     return rec;
   });
 }
@@ -3759,6 +3768,13 @@ function deleteAdvance(p) {
         });
         deleteRowById('Payments', ap.id);
       }
+      // Journal amounts collected out of this advance reopen too.
+      readAll('JournalPayments').forEach(function (jp) {
+        if (budget <= 0.004) return;
+        if (jp.kind !== 'party' || jp.partyId !== partyId || jp.method !== 'Advance') return;
+        budget = r2(budget - r2(jp.amount));
+        deleteRowById('JournalPayments', jp.id);
+      });
     }
 
     if (receiptId) {
@@ -5114,6 +5130,8 @@ function saveJournal(p) {
     if (existing) {
       updateRow('Journal', existing._row, data);
       logActivity('journal', p.id, 'edit', 'Edited journal entry — ' + owner.name);
+      // Saving an entry that still has something to collect takes it from the advance.
+      if (existing.kind === 'party') settleJournalFromAdvance(owner, existing.id);
       return getById('Journal', p.id);
     }
     var rec = {
@@ -5124,8 +5142,48 @@ function saveJournal(p) {
     appendRow('Journal', rec);
     logActivity('journal', rec.id, 'create', 'Added journal entry — ' + owner.name +
       (amount > 0 ? ' (' + (direction === 'take' ? 'to take ' : 'to give ') + amount + ')' : ''));
+    if (p.kind === 'party') settleJournalFromAdvance(owner, rec.id);
     return rec;
   });
+}
+
+/**
+ * Money to take from a shop party is paid out of their advance first. Walks the
+ * party's journal entries that still have something to collect (just `onlyId`
+ * when given), oldest first, and records each amount as a journal payment by
+ * the 'Advance' method, which moves no cash (the money arrived with the
+ * advance). Returns the total taken. Mirror of settleJournalFromAdvance in
+ * src/lib/localAdapter.js.
+ */
+function settleJournalFromAdvance(party, onlyId) {
+  var entries = readAll('Journal').filter(function (e) {
+    return e.kind === 'party' && e.partyId === party.id && e.direction === 'take' &&
+      Number(e.amount) > 0 && (!onlyId || e.id === onlyId);
+  }).sort(function (a, b) {
+    return String(a.date).localeCompare(String(b.date)) || String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
+  });
+  if (!entries.length) return 0;
+  var settled = {};
+  readAll('JournalPayments').forEach(function (x) {
+    settled[x.journalId] = r2((settled[x.journalId] || 0) + (Number(x.amount) || 0));
+  });
+  var total = 0;
+  for (var i = 0; i < entries.length; i++) {
+    var room = r2(r2(entries[i].amount) - (settled[entries[i].id] || 0));
+    var want = r2(Math.min(room, advanceAvailable(party.id)));
+    if (!(want > 0.004)) break;
+    var used = applyAdvance(party.id, want);
+    if (!(used > 0)) break;
+    appendRow('JournalPayments', {
+      id: uid('jpy'), journalId: entries[i].id, kind: 'party', partyId: party.id, direction: 'in',
+      amount: used, date: dayOf(entries[i].date), method: 'Advance', note: 'Advance applied',
+      createdAt: nowISO(), createdBy: ACTING_USER
+    });
+    logActivity('journal payment', entries[i].id, 'create',
+      'Collected ' + used + ' from "' + party.name + '" out of their advance');
+    total = r2(total + used);
+  }
+  return total;
 }
 
 function deleteJournal(p) {
@@ -5184,6 +5242,8 @@ function deleteJournalPayment(p) {
     if (!rec) fail('Payment not found');
     if (rec.kind !== 'party') assertSeesMoney();
     deleteRowById('JournalPayments', p.id);
+    // Money that came out of the party's advance goes back to it.
+    if (rec.method === 'Advance') restoreAdvance(rec.partyId, rec.amount);
     logActivity('journal payment', p.id, 'delete',
       'Deleted journal ' + (rec.direction === 'in' ? 'collection' : 'payment') + ' of ' + rec.amount +
       (p.reason ? ' — ' + p.reason : ''), rec, null);
