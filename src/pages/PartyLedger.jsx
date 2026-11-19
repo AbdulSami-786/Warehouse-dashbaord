@@ -152,7 +152,7 @@ function PartyLedger({ onRelock }) {
     headers: ['Date', 'Particulars', 'Method', { label: 'Debit', align: 'r' }, { label: 'Credit', align: 'r' }, { label: 'Balance', align: 'r' }],
     rows: shown.map((r) => [
       fmtDate(r.date),
-      r.title,
+      r.noteText ? raw(`${esc(r.title)}<br/><span style="color:#6B7280;font-size:10px">${esc(r.noteText)}</span>`) : r.title,
       r.method || '—',
       r.debit > 0 ? money(r.debit) : '—',
       r.credit > 0 ? money(r.credit) : r.pending > 0 ? `(${money(r.pending)})` : r.held > 0 ? `(${money(r.held)})` : '—',
@@ -240,7 +240,7 @@ function PartyLedger({ onRelock }) {
           value={money(outstanding)}
           icon={Receipt}
           tone="#DC2626"
-          note={[journalDue > 0.004 ? `Includes ${money(journalDue)} from the journal` : '', totals.pendingCheques > 0 ? `${money(totals.pendingCheques)} in uncleared cheques` : '', totals.credit > 0 ? `${money(totals.credit)} overpaid — party is in credit` : ''].filter(Boolean).join(' · ') || null}
+          note={[journalDue > 0.004 ? `Includes ${money(journalDue)} from the journal` : '', totals.pendingCheques > 0 ? `${money(totals.pendingCheques)} in cheques not yet cleared (counted as paid)` : '', totals.credit > 0 ? `${money(totals.credit)} overpaid — party is in credit` : ''].filter(Boolean).join(' · ') || null}
           noteTone="#EA580C"
         />
         <Stat label="Advance Balance" value={money(totals.advance)} icon={Wallet} tone="#16A34A" />
@@ -347,6 +347,7 @@ function PartyLedger({ onRelock }) {
                             {r.side === 'purchase' && <><Pill status="partial" label="Purchase" />{' '}</>}
                             {r.isPart ? `↳ ${partName(r)}` : r.title}
                           </div>
+                          {r.noteText && !r.isPart && <div className="small muted">{r.noteText}</div>}
                         </td>
                         <td className="small">{r.method ? <Pill status="neutral" label={r.method} /> : <span className="muted">—</span>}</td>
                         <td className="r strong">{r.debit > 0 ? <Money value={r.debit} /> : <span className="muted">—</span>}</td>
@@ -394,6 +395,7 @@ function PartyLedger({ onRelock }) {
                         {r.debit > 0 ? `+${money(r.debit)}` : r.credit > 0 ? `−${money(r.credit)}` : r.pending > 0 ? `(${money(r.pending)})` : r.held > 0 ? `(${money(r.held)})` : '—'}
                       </span>
                     </div>
+                    {r.noteText && !r.isPart && <div className="small muted">{r.noteText}</div>}
                     <div className="meta">
                       <span>{fmtDate(r.date)}</span>
                       {r.method && <Pill status="neutral" label={r.method} />}

@@ -258,7 +258,7 @@ function assertOpeningBill(db, partyId, amount) {
   const bill = openingBillOf(db, partyId);
   if (!bill) return;
   const st = billState(bill, db);
-  const covered = r2(st.paid + st.pendingCheques + st.returned);
+  const covered = r2(st.paid + st.returned);
   if (covered > amount + 0.004) {
     throw new Error(amount > 0
       ? `${covered.toFixed(2)} has already been received against the opening balance, so it cannot be set below that. Reverse a payment first.`
@@ -679,7 +679,7 @@ async function perform(action, p = {}) {
         if (!old) throw new Error('Bill not found');
         if (old.status === 'voided') throw new Error('A voided bill cannot be edited');
         const st = billState(old, db);
-        const paidSoFar = r2(st.paid + st.pendingCheques);
+        const paidSoFar = st.paid;
         covered = r2(paidSoFar + st.returned);
         if (covered > r2(totals.total) + 0.004) {
           throw new Error(`This bill already has ${paidSoFar.toFixed(2)} paid${st.returned > 0 ? ` and ${st.returned.toFixed(2)} returned` : ''} against it, so it cannot be reduced to ${totals.total.toFixed(2)}. Reverse a payment first.`);
@@ -918,7 +918,7 @@ async function perform(action, p = {}) {
       const st = billState(bill, db);
       const room = payableNow(st);
       if (r2(amount) > r2(room) + 0.004) {
-        throw new Error(`Payment exceeds the amount due (${room.toFixed(2)}${st.pendingCheques > 0 ? `, after ${st.pendingCheques.toFixed(2)} in uncleared cheques` : ''}). Record the extra as an advance instead.`);
+        throw new Error(`Payment exceeds the amount due (${room.toFixed(2)}). Record the extra as an advance instead.`);
       }
       const rec = { id: uid('pay'), billId: p.billId, partyId: p.partyId, method: p.method || 'Cash', amount: r2(p.amount), date: p.date || today(), note: p.note || '', reversed: false };
       db.payments.push(rec);
@@ -983,7 +983,7 @@ async function perform(action, p = {}) {
             const st = billState(bill, { payments: db.payments.filter((x) => x.id !== pay.id), returns: db.returns, cheques: db.cheques });
             const room = payableNow(st);
             if (r2(amt) > room + 0.004) {
-              throw new Error(`Payment exceeds the amount due (${room.toFixed(2)}${st.pendingCheques > 0 ? `, after ${st.pendingCheques.toFixed(2)} in uncleared cheques` : ''}). Record the extra as an advance instead.`);
+              throw new Error(`Payment exceeds the amount due (${room.toFixed(2)}). Record the extra as an advance instead.`);
             }
           }
         }
@@ -2038,20 +2038,43 @@ async function perform(action, p = {}) {
       const claim = journalClaims(entry.kind, entry.partyId, db).find((x) => x.id === entry.id);
       if (!claim) throw new Error('This entry has no payment to collect or give');
       if (entry.kind !== 'party') assertSeesMoney(db);
-      const amount = r2(Number(p.amount));
-      if (!Number.isFinite(amount) || amount <= 0) throw new Error('Enter an amount greater than zero');
-      if (amount > claim.outstanding + 0.004) throw new Error(`Only ${claim.outstanding} is left on this entry.`);
-      const method = String(p.method || 'Cash');
-      assertMethod(method);
-      const owner = db[JOURNAL_KINDS[entry.kind]]?.find((x) => x.id === entry.partyId);
       const take = entry.direction === 'take';
-      const rec = {
-        id: uid('jpy'), journalId: entry.id, kind: entry.kind, partyId: entry.partyId, direction: take ? 'in' : 'out',
-        amount, date: p.date || today(), method, note: String(p.note || '').trim(),
-        createdAt: new Date().toISOString(), createdBy: getSession()?.username || 'system',
-      };
-      db.journalPayments.push(rec);
-      log(db, 'journal payment', rec.id, 'create', `${take ? `Collected ${amount} from` : `Paid ${amount} to`} "${owner?.name || 'party'}" from the journal (${method})`);
+      // Part of a collection can be cut from the party's advance (shop parties only, money to take).
+      const fromAdvance = take && entry.kind === 'party' && Number(p.advanceApplied) > 0 ? r2(p.advanceApplied) : 0;
+      const amount = Number(p.amount) > 0 ? r2(Number(p.amount)) : 0;
+      if (!(amount > 0) && !(fromAdvance > 0)) throw new Error('Enter an amount greater than zero');
+      if (r2(amount + fromAdvance) > claim.outstanding + 0.004) throw new Error(`Only ${claim.outstanding} is left on this entry.`);
+      const owner = db[JOURNAL_KINDS[entry.kind]]?.find((x) => x.id === entry.partyId);
+      const by = getSession()?.username || 'system';
+      const date = p.date || today();
+      const note = String(p.note || '').trim();
+      if (fromAdvance > 0) {
+        const available = advanceAvailable(entry.partyId, db.partyAdvances);
+        if (fromAdvance > available + 0.004) throw new Error(`Only ${available} of advance is available for this party.`);
+      }
+      let method = 'Cash';
+      if (amount > 0) {
+        method = String(p.method || 'Cash');
+        assertMethod(method);
+      }
+      let rec = null;
+      if (fromAdvance > 0) {
+        const used = takeAdvance(db, entry.partyId, fromAdvance);
+        rec = {
+          id: uid('jpy'), journalId: entry.id, kind: entry.kind, partyId: entry.partyId, direction: 'in',
+          amount: used, date, method: 'Advance', note: note || 'Cut from advance', createdAt: new Date().toISOString(), createdBy: by,
+        };
+        db.journalPayments.push(rec);
+        log(db, 'journal payment', rec.id, 'create', `Collected ${used} from "${owner?.name || 'party'}" out of their advance`);
+      }
+      if (amount > 0) {
+        rec = {
+          id: uid('jpy'), journalId: entry.id, kind: entry.kind, partyId: entry.partyId, direction: take ? 'in' : 'out',
+          amount, date, method, note, createdAt: new Date().toISOString(), createdBy: by,
+        };
+        db.journalPayments.push(rec);
+        log(db, 'journal payment', rec.id, 'create', `${take ? `Collected ${amount} from` : `Paid ${amount} to`} "${owner?.name || 'party'}" from the journal (${method})`);
+      }
       save();
       return rec;
     }

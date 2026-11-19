@@ -5286,24 +5286,49 @@ function addJournalPayment(p) {
       fail('This entry has no payment to collect or give');
     }
     if (entry.kind !== 'party') assertSeesMoney();
-    var amount = r2(Number(p.amount));
-    if (!isFinite(amount) || amount <= 0) fail('Enter an amount greater than zero');
+    var take = entry.direction === 'take';
+    // Part of a collection can be cut from the party's advance (shop parties only, money to take).
+    var fromAdvance = take && entry.kind === 'party' && Number(p.advanceApplied) > 0 ? r2(Number(p.advanceApplied)) : 0;
+    var amount = Number(p.amount) > 0 ? r2(Number(p.amount)) : 0;
+    if (!(amount > 0) && !(fromAdvance > 0)) fail('Enter an amount greater than zero');
     var left = r2(total - journalSettled(entry.id));
-    if (amount > left + 0.004) fail('Only ' + left + ' is left on this entry.');
-    var method = String(p.method || 'Cash');
-    assertMethod(method);
+    if (r2(amount + fromAdvance) > left + 0.004) fail('Only ' + left + ' is left on this entry.');
     var tab = JOURNAL_KINDS[entry.kind];
     var owner = tab ? getById(tab, entry.partyId) : null;
-    var take = entry.direction === 'take';
-    var rec = {
-      id: uid('jpy'), journalId: entry.id, kind: entry.kind, partyId: entry.partyId,
-      direction: take ? 'in' : 'out', amount: amount, date: p.date || todayISO(), method: method,
-      note: String(p.note || '').trim(), createdAt: nowISO(), createdBy: ACTING_USER
-    };
-    appendRow('JournalPayments', rec);
-    logActivity('journal payment', rec.id, 'create',
-      (take ? 'Collected ' + amount + ' from "' : 'Paid ' + amount + ' to "') + (owner ? owner.name : 'party') +
-      '" from the journal (' + method + ')');
+    var date = p.date || todayISO();
+    var note = String(p.note || '').trim();
+    if (fromAdvance > 0) {
+      var available = advanceAvailable(entry.partyId);
+      if (fromAdvance > available + 0.004) fail('Only ' + available + ' of advance is available for this party.');
+    }
+    var method = 'Cash';
+    if (amount > 0) {
+      method = String(p.method || 'Cash');
+      assertMethod(method);
+    }
+    var rec = null;
+    if (fromAdvance > 0) {
+      var used = applyAdvance(entry.partyId, fromAdvance);
+      rec = {
+        id: uid('jpy'), journalId: entry.id, kind: entry.kind, partyId: entry.partyId, direction: 'in',
+        amount: used, date: date, method: 'Advance', note: note || 'Cut from advance',
+        createdAt: nowISO(), createdBy: ACTING_USER
+      };
+      appendRow('JournalPayments', rec);
+      logActivity('journal payment', rec.id, 'create',
+        'Collected ' + used + ' from "' + (owner ? owner.name : 'party') + '" out of their advance');
+    }
+    if (amount > 0) {
+      rec = {
+        id: uid('jpy'), journalId: entry.id, kind: entry.kind, partyId: entry.partyId,
+        direction: take ? 'in' : 'out', amount: amount, date: date, method: method,
+        note: note, createdAt: nowISO(), createdBy: ACTING_USER
+      };
+      appendRow('JournalPayments', rec);
+      logActivity('journal payment', rec.id, 'create',
+        (take ? 'Collected ' + amount + ' from "' : 'Paid ' + amount + ' to "') + (owner ? owner.name : 'party') +
+        '" from the journal (' + method + ')');
+    }
     return rec;
   });
 }

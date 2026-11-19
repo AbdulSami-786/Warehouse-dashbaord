@@ -57,25 +57,19 @@ export function billReturned(billId, returns = []) {
 /**
  * Everything the screen needs to know about one bill's money.
  *
- * A payment backed by a cheque that has not cleared does not count as paid; a
- * bounced cheque stops counting altogether, so the bill reopens by itself.
+ * A cheque counts as paid the moment it is taken, even before the bank clears
+ * it. A bounced cheque stops counting, so the bill reopens by itself.
+ * `pendingCheques` is the part of `paid` that is still waiting to clear.
  */
 export function billState(bill, { payments = [], returns = [], cheques = [] } = {}) {
   const gross = r2(bill.totalAmount);
   const returned = billReturned(bill.id, returns);
   const net = r2(gross - returned);
-  const uncleared = new Set(cheques.filter((c) => c.status !== 'cleared' && c.paymentId).map((c) => c.paymentId));
-  const counts = (p) => p.billId === bill.id && !p.reversed && !uncleared.has(p.id);
+  const bounced = new Set(cheques.filter((c) => c.status === 'bounced' && c.paymentId).map((c) => c.paymentId));
+  const waiting = new Set(cheques.filter((c) => c.status === 'pending' && c.paymentId).map((c) => c.paymentId));
+  const counts = (p) => p.billId === bill.id && !p.reversed && !bounced.has(p.id);
   const paid = r2(payments.filter(counts).reduce((s, p) => s + (Number(p.amount) || 0), 0));
-  const pendingCheques = r2(
-    payments
-      .filter((p) => p.billId === bill.id && !p.reversed && uncleared.has(p.id))
-      .filter((p) => {
-        const c = cheques.find((x) => x.paymentId === p.id);
-        return c && c.status !== 'bounced';
-      })
-      .reduce((s, p) => s + (Number(p.amount) || 0), 0),
-  );
+  const pendingCheques = r2(payments.filter((p) => counts(p) && waiting.has(p.id)).reduce((s, p) => s + (Number(p.amount) || 0), 0));
   const delivery = bill.status === 'voided' ? 'cancelled' : bill.delivery === 'pending' ? 'pending' : 'delivered';
   return withPaid(
     {
@@ -138,9 +132,9 @@ function carryOverpayments(states) {
   return out;
 }
 
-/** What can still be paid on a bill now, after cheques waiting to clear. */
+/** What can still be paid on a bill now. Cheques waiting to clear already count as paid. */
 export function payableNow(state) {
-  return r2(Math.max(0, (state?.due || 0) - (state?.pendingCheques || 0)));
+  return r2(Math.max(0, state?.due || 0));
 }
 
 export function billStates(bills = [], data = {}) {
@@ -833,6 +827,7 @@ function collapseGroups(rows) {
       pending: r2(g.reduce((s, x) => s + (x.pending || 0), 0)),
       held: 0,
       advBack: r2(g.reduce((s, x) => s + (x.advBack || 0), 0)),
+      noteText: notes.join(' · '),
       originalAmount: total, struck: first.struck, reversed: g.every((x) => x.reversed),
       paymentId: null, chequeId: null, billId: null, parts: g,
     };
@@ -876,6 +871,7 @@ export function partyLedger(partyId, data = {}, from = null, to = null) {
       title: opening ? 'Opening balance' : `Bill ${b.billNo}`,
       detail: opening ? b.note || 'Balance brought forward from the previous books' : detail,
       method: '', debit: r2(b.totalAmount), credit: 0,
+      noteText: opening ? '' : b.note || '',
     });
   });
 
@@ -907,11 +903,12 @@ export function partyLedger(partyId, data = {}, from = null, to = null) {
         title: waiting ? `Cheque received — ${chq.bankName || p.method}`
           : p.isAdvance ? 'Advance received' : `Payment — ${p.method}`,
         detail, method: p.method, debit: 0,
-        credit: p.reversed || bounced || waiting || p.isAdvance ? 0 : r2(p.amount),
+        // A cheque counts the moment it is taken; only a bounced or reversed one stops counting.
+        credit: p.reversed || bounced || p.isAdvance ? 0 : r2(p.amount),
         struck: !!(p.reversed || bounced),
-        pending: waiting ? r2(p.amount) : 0,
+        pending: 0,
         // An advance is held for the party, not set against a bill: it moves no balance, but its amount is shown.
-        held: p.isAdvance && !p.reversed && !bounced && !waiting ? r2(p.amount) : 0,
+        held: p.isAdvance && !p.reversed && !bounced ? r2(p.amount) : 0,
         // A bill paid out of the advance: the money was already counted when the advance arrived.
         advBack: p.method === 'Advance' && !p.isAdvance && !p.reversed ? r2(p.amount) : 0,
         originalAmount: r2(p.amount),

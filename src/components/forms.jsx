@@ -436,13 +436,13 @@ export function PaymentModal({ open, onClose, bill, state, party }) {
         <div><div className="small muted">Already paid</div><Money value={state?.paid ?? 0} /></div>
         <div><div className="small muted">Balance due</div><span className="money" style={{ color: 'var(--danger)' }}>{money(room)}</span></div>
         {pendingCheques > 0 && (
-          <div><div className="small muted">Cheques awaiting clearance</div><span className="money" style={{ color: '#B45309' }}>{money(pendingCheques)}</span></div>
+          <div><div className="small muted">Of which cheques not yet cleared</div><span className="money" style={{ color: '#B45309' }}>{money(pendingCheques)}</span></div>
         )}
       </div>
       {over && (
         <div className="small mb-2" style={{ color: 'var(--danger)', fontWeight: 600 }}>
           Total {money(total)} is more than the {money(room)} left on this bill
-          {pendingCheques > 0 ? ` after ${money(pendingCheques)} in uncleared cheques` : ''}.
+.
           {' '}Use Payment on the party ledger for the extra — it goes to their other bills or becomes an advance.
         </div>
       )}
