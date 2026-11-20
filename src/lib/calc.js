@@ -698,7 +698,11 @@ export function journalClaims(kind, partyId, { journal = [], journalPayments = [
       const amount = r2(e.amount);
       const pays = journalPayments.filter((p) => p.journalId === e.id);
       const settled = r2(pays.reduce((s, p) => s + (Number(p.amount) || 0), 0));
-      return { ...e, amount, settled, pays, outstanding: r2(Math.max(0, amount - settled)) };
+      const outstanding = r2(Math.max(0, amount - settled));
+      // Paid off by the party's advance alone, an entry still lets you press Collect. Once something has
+      // been collected by hand (or an extra was taken into the advance) and nothing is left, it closes.
+      const byHand = e.manual === 'yes' || e.manual === true || pays.some((p) => p.method !== 'Advance');
+      return { ...e, amount, settled, pays, outstanding, locked: outstanding <= 0.004 && byHand };
     });
 }
 
@@ -960,7 +964,10 @@ export function partyLedger(partyId, data = {}, from = null, to = null) {
   journalRows('party', partyId, data).filter((r) => within(r.date))
     .forEach((r) => rows.push(r.type === 'jpay' && r.groupId ? { ...r, groupKey: groups.get(r.journalPaymentId) || null } : r));
 
-  const folded = collapseGroups(rows);
+  // A bill or journal entry paid out of the party's advance is not shown: that money was already
+  // counted when the advance arrived, so the line would only repeat a credit the balance never moves for.
+  const folded = collapseGroups(rows).filter((r) => !(
+    (r.type === 'jpay' || r.type === 'payment') && !r.parts && r.advBack > 0 && r2(r.credit) === r2(r.advBack)));
   const order = { bill: 0, journal: 0, payment: 1, jpay: 1, advance: 1, 'cheque-pending': 1, return: 2, reversal: 3, bounced: 3, void: 4, info: 5 };
   folded.sort((a, b) => new Date(a.date) - new Date(b.date) ||
     (order[a.type] ?? 9) - (order[b.type] ?? 9) || String(a.id).localeCompare(String(b.id)));

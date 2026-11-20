@@ -103,8 +103,10 @@ var SCHEMA = {
   // pay the shop ('take') or the shop will pay the party ('give'). An entry
   // with an amount joins the ledger's balance; what is collected or paid
   // against it is kept in JournalPayments.
+  // manual appended: 'yes' once money was collected or paid on the entry by hand,
+  // which closes its Collect/Pay button when nothing is left on it.
   Journal: ['id', 'kind', 'partyId', 'date', 'title', 'fields', 'createdAt', 'createdBy', 'updatedAt',
-            'direction', 'amount'],
+            'direction', 'amount', 'manual'],
   // direction: 'in' = collected from the party, 'out' = paid to the party.
   // groupId appended: set when the money came in through one account payment that
   // also cleared bills, so the ledger can show the whole receipt as one entry.
@@ -207,7 +209,7 @@ var BOOLEAN = { reversed: 1, restock: 1, active: 1, isAdvance: 1 };
  * was not updated (Deploy > Manage deployments > edit > New version > Deploy).
  * Keep in step with package.json.
  */
-var BACKEND_VERSION = '2.7.27';
+var BACKEND_VERSION = '2.7.29';
 
 function doGet(e) {
   return json({ ok: true, data: { status: 'SGA Balloon Merchant backend is running', version: BACKEND_VERSION } });
@@ -521,7 +523,7 @@ var ACTION_PAGES = {
   saveExpense: ['expenses'], saveStockLoss: ['stockLoss'], saveAsset: ['assets'],
   saveSettings: ['settings'],
   saveJournal: ['parties', 'suppliers', 'whParties'], deleteJournal: ['parties', 'suppliers', 'whParties'],
-  addJournalPayment: ['parties', 'suppliers', 'whParties'], deleteJournalPayment: ['parties', 'suppliers', 'whParties'],
+  addJournalPayment: ['parties', 'suppliers', 'whParties', 'bills', 'outstanding'], deleteJournalPayment: ['parties', 'suppliers', 'whParties'],
   saveWarehouse: ['warehouses'], archiveWarehouse: ['warehouses'],
   saveWhMove: ['whMoves'], voidWhMove: ['whMoves'], updateWhMove: ['whMoves'], deleteWhMove: ['whMoves'], saveStockCount: ['whCount'],
   saveWhExpense: ['whExpenses'], deleteWhExpense: ['whExpenses'],
@@ -5292,7 +5294,13 @@ function addJournalPayment(p) {
     var amount = Number(p.amount) > 0 ? r2(Number(p.amount)) : 0;
     if (!(amount > 0) && !(fromAdvance > 0)) fail('Enter an amount greater than zero');
     var left = r2(total - journalSettled(entry.id));
-    if (r2(amount + fromAdvance) > left + 0.004) fail('Only ' + left + ' is left on this entry.');
+    // A shop party may hand over more than is left; the extra is held as their advance.
+    var canExtra = take && entry.kind === 'party';
+    if (fromAdvance > left + 0.004 || (!canExtra && r2(amount + fromAdvance) > left + 0.004)) {
+      fail('Only ' + left + ' is left on this entry.');
+    }
+    var toEntry = r2(Math.min(amount, Math.max(0, left - fromAdvance)));
+    var extra = r2(amount - toEntry);
     var tab = JOURNAL_KINDS[entry.kind];
     var owner = tab ? getById(tab, entry.partyId) : null;
     var date = p.date || todayISO();
@@ -5318,17 +5326,33 @@ function addJournalPayment(p) {
       logActivity('journal payment', rec.id, 'create',
         'Collected ' + used + ' from "' + (owner ? owner.name : 'party') + '" out of their advance');
     }
-    if (amount > 0) {
+    if (toEntry > 0) {
       rec = {
         id: uid('jpy'), journalId: entry.id, kind: entry.kind, partyId: entry.partyId,
-        direction: take ? 'in' : 'out', amount: amount, date: date, method: method,
+        direction: take ? 'in' : 'out', amount: toEntry, date: date, method: method,
         note: note, createdAt: nowISO(), createdBy: ACTING_USER
       };
       appendRow('JournalPayments', rec);
       logActivity('journal payment', rec.id, 'create',
-        (take ? 'Collected ' + amount + ' from "' : 'Paid ' + amount + ' to "') + (owner ? owner.name : 'party') +
+        (take ? 'Collected ' + toEntry + ' from "' : 'Paid ' + toEntry + ' to "') + (owner ? owner.name : 'party') +
         '" from the journal (' + method + ')');
     }
+    if (extra > 0) {
+      var adv = {
+        id: uid('adv'), partyId: entry.partyId, amount: extra, applied: 0, dateReceived: date,
+        method: method, note: note || 'Extra collected on a journal entry'
+      };
+      appendRow('PartyAdvances', adv);
+      appendRow('Payments', {
+        id: uid('pay'), billId: '', partyId: entry.partyId, method: method, amount: extra, date: date,
+        note: 'Advance received', reversed: false, reversedAt: '', reverseReason: '', isAdvance: true
+      });
+      logActivity('advance', adv.id, 'create', 'Advance received ' + extra + ' (extra collected on a journal entry)');
+      if (owner) settleDuesFromAdvance(owner);
+      rec = rec || adv;
+    }
+    // Anything taken by hand closes the entry once nothing is left on it.
+    if (amount > 0 || fromAdvance > 0) updateRow('Journal', entry._row, { manual: 'yes' });
     return rec;
   });
 }

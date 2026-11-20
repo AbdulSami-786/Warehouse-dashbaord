@@ -147,18 +147,21 @@ function SettleModal({ claim, party, advance = 0, onClose }) {
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     if (claim) {
-      setF({ amount: String(claim.outstanding), method: 'Cash', date: today(), note: '', fromAdvance: '' });
+      setF({ amount: claim.outstanding > 0.004 ? String(claim.outstanding) : '', method: 'Cash', date: today(), note: '', fromAdvance: '' });
       setUseAdv(false);
     }
   }, [claim?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!claim) return null;
   const d = DIRECTIONS[claim.direction];
-  const canAdvance = claim.direction === 'take' && advance > 0.004;
+  const settled = claim.outstanding <= 0.004;
+  const canAdvance = claim.direction === 'take' && advance > 0.004 && !settled;
+  // A shop party may hand over more than is left; the extra is kept as their advance.
+  const canExtra = claim.direction === 'take' && claim.kind === 'party';
   const adv = useAdv && canAdvance ? Number(f.fromAdvance) || 0 : 0;
   const amt = Number(f.amount) || 0;
   const total = r2(amt + adv);
-  const settled = claim.outstanding <= 0.004;
-  const over = total > claim.outstanding + 0.004;
+  const extra = canExtra ? r2(Math.max(0, amt - Math.max(0, claim.outstanding - adv))) : 0;
+  const over = canExtra ? adv > claim.outstanding + 0.004 : total > claim.outstanding + 0.004;
   const advOver = adv > advance + 0.004;
   const set = (k) => (e) => setF((x) => ({ ...x, [k]: e.target.value }));
   // Typing an advance amount lowers the cash amount so the two together still make what is left.
@@ -171,14 +174,16 @@ function SettleModal({ claim, party, advance = 0, onClose }) {
     const v = on ? String(r2(Math.min(advance, claim.outstanding))) : '';
     setF((x) => ({ ...x, fromAdvance: v, amount: String(Math.max(0, r2(claim.outstanding - (Number(v) || 0)))) }));
   };
-  const canSave = !settled && total > 0 && !over && !advOver;
+  const canSave = total > 0 && !over && !advOver;
   const save = async () => {
     if (busy || !canSave) return;
     setBusy(true);
     try {
       await mutate(() => api.addJournalPayment({
         journalId: claim.id, amount: amt, advanceApplied: adv, method: f.method, date: f.date, note: f.note,
-      }), claim.direction === 'take' ? `${money(total)} collected from ${party.name}` : `${money(total)} paid to ${party.name}`);
+      }), claim.direction === 'take'
+        ? `${money(total)} collected from ${party.name}${extra > 0 ? ` — ${money(extra)} kept as advance` : ''}`
+        : `${money(total)} paid to ${party.name}`);
       onClose();
     } catch { /* toasted */ } finally {
       setBusy(false);
@@ -192,7 +197,7 @@ function SettleModal({ claim, party, advance = 0, onClose }) {
       footer={<><Button onClick={onClose}>Cancel</Button><Button variant="primary" icon={Save} loading={busy} disabled={!canSave} onClick={save}>{d.verb} {total > 0 ? money(total) : ''}</Button></>}
     >
       <div style={{ padding: 12, marginBottom: 12, background: 'var(--bg)', borderRadius: 'var(--r-sm)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center' }}>
-        <span>{claim.title || 'Journal entry'} — {settled ? 'fully settled, nothing left to ' + (claim.direction === 'take' ? 'collect' : 'pay') : 'still to ' + (claim.direction === 'take' ? 'collect' : 'pay')}</span>
+        <span>{claim.title || 'Journal entry'} — {settled ? 'fully settled' + (canExtra ? '; anything you collect now is kept as advance' : ', nothing left to ' + (claim.direction === 'take' ? 'collect' : 'pay')) : 'still to ' + (claim.direction === 'take' ? 'collect' : 'pay')}</span>
         <span className="spacer" />
         <span className="money" style={{ fontSize: 16 }}>{money(claim.outstanding)}</span>
       </div>
@@ -216,7 +221,10 @@ function SettleModal({ claim, party, advance = 0, onClose }) {
       <div className="form-grid">
         <Field
           label={useAdv ? (claim.direction === 'take' ? 'Amount received now' : 'Amount paid now') : 'Amount'}
-          hint={over ? `Only ${money(claim.outstanding)} is left` : total > 0 ? `Left after this: ${money(r2(claim.outstanding - total))}` : undefined}
+          hint={over
+            ? (canExtra ? `Only ${money(claim.outstanding)} is left to cut from advance` : `Only ${money(claim.outstanding)} is left`)
+            : extra > 0 ? `${money(r2(amt - extra))} goes to this entry, ${money(extra)} is added to ${party.name}’s advance`
+              : total > 0 ? `Left after this: ${money(r2(claim.outstanding - total))}` : undefined}
         >
           <Input type="number" min="0" step="any" value={f.amount} onChange={set('amount')} autoFocus />
         </Field>
@@ -329,7 +337,16 @@ export default function PartyJournal({ kind, party, action = null, onActionDone 
                           {claim.outstanding > 0.004 ? `${money(claim.outstanding)} left` : 'Fully settled'}
                         </span>
                         <span className="spacer" />
-                        <Button size="sm" variant="primary" icon={HandCoins} onClick={() => setSettling(claim)}>{d.verb}</Button>
+                        <Button
+                          size="sm"
+                          variant="primary"
+                          icon={HandCoins}
+                          disabled={claim.locked}
+                          title={claim.locked ? `Fully ${d.doneWord.toLowerCase()} — nothing left to ${d.verb.toLowerCase()}` : undefined}
+                          onClick={() => setSettling(claim)}
+                        >
+                          {d.verb}
+                        </Button>
                       </div>
                       {claim.pays.length > 0 && (
                         <div style={{ display: 'grid', gap: 4, marginTop: 8 }}>

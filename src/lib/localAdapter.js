@@ -2043,7 +2043,13 @@ async function perform(action, p = {}) {
       const fromAdvance = take && entry.kind === 'party' && Number(p.advanceApplied) > 0 ? r2(p.advanceApplied) : 0;
       const amount = Number(p.amount) > 0 ? r2(Number(p.amount)) : 0;
       if (!(amount > 0) && !(fromAdvance > 0)) throw new Error('Enter an amount greater than zero');
-      if (r2(amount + fromAdvance) > claim.outstanding + 0.004) throw new Error(`Only ${claim.outstanding} is left on this entry.`);
+      // A shop party may hand over more than is left; the extra is held as their advance.
+      const canExtra = take && entry.kind === 'party';
+      if (fromAdvance > claim.outstanding + 0.004 || (!canExtra && r2(amount + fromAdvance) > claim.outstanding + 0.004)) {
+        throw new Error(`Only ${claim.outstanding} is left on this entry.`);
+      }
+      const toEntry = r2(Math.min(amount, Math.max(0, claim.outstanding - fromAdvance)));
+      const extra = r2(amount - toEntry);
       const owner = db[JOURNAL_KINDS[entry.kind]]?.find((x) => x.id === entry.partyId);
       const by = getSession()?.username || 'system';
       const date = p.date || today();
@@ -2067,14 +2073,24 @@ async function perform(action, p = {}) {
         db.journalPayments.push(rec);
         log(db, 'journal payment', rec.id, 'create', `Collected ${used} from "${owner?.name || 'party'}" out of their advance`);
       }
-      if (amount > 0) {
+      if (toEntry > 0) {
         rec = {
           id: uid('jpy'), journalId: entry.id, kind: entry.kind, partyId: entry.partyId, direction: take ? 'in' : 'out',
-          amount, date, method, note, createdAt: new Date().toISOString(), createdBy: by,
+          amount: toEntry, date, method, note, createdAt: new Date().toISOString(), createdBy: by,
         };
         db.journalPayments.push(rec);
-        log(db, 'journal payment', rec.id, 'create', `${take ? `Collected ${amount} from` : `Paid ${amount} to`} "${owner?.name || 'party'}" from the journal (${method})`);
+        log(db, 'journal payment', rec.id, 'create', `${take ? `Collected ${toEntry} from` : `Paid ${toEntry} to`} "${owner?.name || 'party'}" from the journal (${method})`);
       }
+      if (extra > 0) {
+        const adv = { id: uid('adv'), partyId: entry.partyId, amount: extra, applied: 0, dateReceived: date, method, note: note || 'Extra collected on a journal entry' };
+        db.partyAdvances.push(adv);
+        db.payments.push({ id: uid('pay'), billId: null, partyId: entry.partyId, method, amount: extra, date, note: 'Advance received', reversed: false, isAdvance: true });
+        log(db, 'advance', adv.id, 'create', `Advance received ${extra} (extra collected on a journal entry)`);
+        if (owner) settleDuesFromAdvance(db, owner);
+        rec = rec || adv;
+      }
+      // Anything taken by hand closes the entry once nothing is left on it.
+      if (amount > 0 || fromAdvance > 0) entry.manual = 'yes';
       save();
       return rec;
     }
